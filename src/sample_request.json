@@ -1,0 +1,10 @@
+{
+  "age": 32,
+  "income": 65000,
+  "loan_amount": 12000,
+  "loan_term_months": 36,
+  "credit_score": 720,
+  "employment_years": 5,
+  "marital_status": "single",
+  "education": "bachelor"
+}
