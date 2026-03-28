@@ -1,42 +1,46 @@
-from flask import Flask, request, jsonify
+from flask import Flask, render_template, request
 import joblib
-import numpy as np
-from src.utils import json_to_dataframe
+import json
+import pandas as pd
 
 app = Flask(__name__)
 
-# Load trained model once at startup
-model = joblib.load("models/best_model.joblib")
+# Load model
+model = joblib.load("models/best_model.joblib")  # change name if needed
 
-
-@app.route("/")
+@app.route('/')
 def home():
-    return "Credit Risk Prediction API is running!"
-
-
-@app.route("/predict", methods=["POST"])
+    return render_template("index.html")
+@app.route('/predict', methods=['POST'])
 def predict():
     try:
-        data = request.get_json()
+        # Get input from form
+        data = request.form.to_dict()
 
-        X = json_to_dataframe(data)
+        # Convert only numeric fields
+        numeric_fields = ['age', 'income', 'loan_amount', 'credit_score', 'loan_term_months', 'employment_years']
 
+        for key in numeric_fields:
+            if key in data:
+                data[key] = float(data[key])
+
+        # Convert to DataFrame
+        df = pd.DataFrame([data])
+
+        # Predict
         if hasattr(model, "predict_proba"):
-            proba = float(model.predict_proba(X)[:, 1][0])
+            proba = model.predict_proba(df)[0][1]
         else:
-            score = float(model.decision_function(X)[0])
-            proba = float(1 / (1 + np.exp(-score)))
+            proba = model.predict(df)[0]
 
-        label = int(proba >= 0.5)
+        label = int(proba > 0.5)
 
-        return jsonify({
-            "probability_of_default": round(proba, 6),
-            "predicted_label": label
-        })
+        return render_template("index.html",
+                               prediction=label,
+                               probability=round(proba, 2))
 
     except Exception as e:
-        return jsonify({"error": str(e)})
-
+        return f"Error: {e}"
 
 if __name__ == "__main__":
     app.run(debug=True)

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Credit Risk Predictor</title>
+    <style>
+        body {
+            font-family: Arial;
+            background: #0f172a;
+            color: white;
+            text-align: center;
+        }
+        form {
+            background: #1e293b;
+            padding: 20px;
+            margin: auto;
+            width: 300px;
+            border-radius: 10px;
+        }
+        input {
+            margin: 5px;
+            padding: 8px;
+            width: 90%;
+        }
+        button {
+            padding: 10px;
+            background: #22c55e;
+            border: none;
+            color: white;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+<h1>💳 Credit Risk Predictor</h1>
+
+<form action="/predict" method="post">
+    <input type="number" name="age" placeholder="Age" required>
+    <input type="number" name="income" placeholder="Income" required>
+    <input type="number" name="loan_amount" placeholder="Loan Amount" required>
+    <input type="number" name="credit_score" placeholder="Credit Score" required>
+    <input type="number" name="loan_term_months" placeholder="Loan Term (months)" required>
+<input type="number" name="employment_years" placeholder="Employment Years" required>
+
+<input type="text" name="marital_status" placeholder="Marital Status (single/married)" required>
+<input type="text" name="education" placeholder="Education (graduate/non-graduate)" required>
+    
+    <button type="submit">Predict</button>
+</form>
+
+{% if prediction is not none %}
+    <h2>Prediction: {{ prediction }}</h2>
+    <h3>Probability: {{ probability }}</h3>
+{% endif %}
+
+</body>
+</html>
