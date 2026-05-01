@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Demo Payment | CrediSense AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="auth-page">
+    <main class="payment-shell">
+        <section class="payment-card">
+            <div class="sidebar-brand payment-brand">
+                <div class="brand-mark">CS</div>
+                <div>
+                    <strong>CrediSense AI</strong>
+                    <span>Demo repayment gateway</span>
+                </div>
+            </div>
+
+            <p class="eyebrow">Loan #{{ loan.id }}</p>
+            <h1>Fake payment checkout</h1>
+            <p class="payment-copy">This page simulates a repayment for your presentation. It updates the loan balance, due date, and mobile message log.</p>
+
+            <div class="payment-summary">
+                <div>
+                    <span>Credited amount</span>
+                    <strong>${{ "{:,.0f}".format(loan.disbursed_amount) }}</strong>
+                </div>
+                <div>
+                    <span>Current balance</span>
+                    <strong>${{ "{:,.2f}".format(loan.balance_amount) }}</strong>
+                </div>
+                <div>
+                    <span>Pay now</span>
+                    <strong>${{ "{:,.2f}".format(loan.monthly_payment) }}</strong>
+                </div>
+                <div>
+                    <span>Due time</span>
+                    <strong>{{ loan.days_until_due }} days</strong>
+                </div>
+            </div>
+
+            <form method="POST" class="payment-form">
+                <label>
+                    Card number
+                    <input value="4242 4242 4242 4242" readonly>
+                </label>
+                <div class="payment-form-grid">
+                    <label>
+                        Expiry
+                        <input value="12/30" readonly>
+                    </label>
+                    <label>
+                        CVV
+                        <input value="123" readonly>
+                    </label>
+                </div>
+                <button type="submit" class="primary-button full">
+                    <i data-lucide="credit-card"></i>
+                    Complete demo payment
+                </button>
+                <a class="secondary-button full" href="{{ url_for('dashboard') }}">
+                    <i data-lucide="arrow-left"></i>
+                    Back to dashboard
+                </a>
+            </form>
+        </section>
+    </main>
+
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

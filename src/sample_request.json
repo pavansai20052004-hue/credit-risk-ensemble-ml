@@ -5,6 +5,7 @@
   "loan_term_months": 36,
   "credit_score": 720,
   "employment_years": 5,
+  "dependents": 1,
   "marital_status": "single",
   "education": "bachelor"
 }

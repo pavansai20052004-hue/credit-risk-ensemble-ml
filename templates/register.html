@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create account | CrediSense AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="auth-page">
+    <main class="auth-shell compact">
+        <section class="auth-hero" aria-label="CrediSense AI">
+            <div class="brand-mark">CS</div>
+            <p class="eyebrow">New workspace</p>
+            <h1>Start with CrediSense AI</h1>
+            <p class="auth-copy">Create a customer or officer demo account backed by the same SQLite user table.</p>
+        </section>
+
+        <section class="auth-panel">
+            <div class="auth-panel-header">
+                <p class="eyebrow">Account setup</p>
+                <h2>Create account</h2>
+            </div>
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    <div class="flash-stack">
+                        {% for category, message in messages %}
+                            <div class="flash {{ category }}">{{ message }}</div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+
+            <form action="{{ url_for('register') }}" method="POST" class="auth-form">
+                <label>
+                    Full name
+                    <input type="text" name="name" placeholder="Alex Morgan" autocomplete="name" required>
+                </label>
+                <label>
+                    Email
+                    <input type="email" name="email" placeholder="alex@example.com" autocomplete="email" required>
+                </label>
+                <label>
+                    Role
+                    <select name="role">
+                        <option value="customer">Customer</option>
+                        <option value="bank_officer">Bank Officer</option>
+                    </select>
+                </label>
+                <label>
+                    Password
+                    <input type="password" name="password" placeholder="Minimum 8 characters" autocomplete="new-password" minlength="8" required>
+                </label>
+                <button type="submit" class="primary-button">
+                    <i data-lucide="user-plus"></i>
+                    Create account
+                </button>
+            </form>
+
+            <p class="auth-switch">Already registered? <a href="{{ url_for('login') }}">Sign in</a></p>
+        </section>
+    </main>
+
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

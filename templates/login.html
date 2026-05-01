@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in | CrediSense AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="auth-page">
+    <main class="auth-shell">
+        <section class="auth-hero" aria-label="CrediSense AI">
+            <div class="brand-mark">CS</div>
+            <p class="eyebrow">Credit Risk SaaS</p>
+            <h1>CrediSense AI</h1>
+            <p class="auth-copy">Role-based lending intelligence for customers, bank officers, and risk teams.</p>
+            <div class="auth-stats">
+                <div>
+                    <strong>SQLite</strong>
+                    <span>Secure local data layer</span>
+                </div>
+                <div>
+                    <strong>ML</strong>
+                    <span>Saved model pipeline</span>
+                </div>
+                <div>
+                    <strong>RBAC</strong>
+                    <span>Customer and officer access</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="auth-panel">
+            <div class="auth-panel-header">
+                <p class="eyebrow">Welcome back</p>
+                <h2>Sign in</h2>
+            </div>
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    <div class="flash-stack">
+                        {% for category, message in messages %}
+                            <div class="flash {{ category }}">{{ message }}</div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+
+            <form action="{{ url_for('login') }}" method="POST" class="auth-form">
+                <label>
+                    Email
+                    <input id="email" type="email" name="email" placeholder="you@bank.com" autocomplete="email" required>
+                </label>
+                <label>
+                    Password
+                    <input id="password" type="password" name="password" placeholder="Enter password" autocomplete="current-password" required>
+                </label>
+                <button type="submit" class="primary-button">
+                    <i data-lucide="log-in"></i>
+                    Sign in
+                </button>
+            </form>
+
+            <div class="demo-logins" aria-label="Demo accounts">
+                <button type="button" class="demo-login" data-email="customer@credisense.ai" data-password="Customer@123">
+                    <span>Customer</span>
+                    <small>customer@credisense.ai</small>
+                </button>
+                <button type="button" class="demo-login" data-email="officer@credisense.ai" data-password="Officer@123">
+                    <span>Bank Officer</span>
+                    <small>officer@credisense.ai</small>
+                </button>
+                <button type="button" class="demo-login" data-email="admin@credisense.ai" data-password="Admin@123">
+                    <span>Risk Admin</span>
+                    <small>admin@credisense.ai</small>
+                </button>
+            </div>
+
+            <p class="auth-switch">New customer? <a href="{{ url_for('register') }}">Create an account</a></p>
+        </section>
+    </main>
+
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -1,57 +1,528 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Credit Risk Predictor</title>
-    <style>
-        body {
-            font-family: Arial;
-            background: #0f172a;
-            color: white;
-            text-align: center;
-        }
-        form {
-            background: #1e293b;
-            padding: 20px;
-            margin: auto;
-            width: 300px;
-            border-radius: 10px;
-        }
-        input {
-            margin: 5px;
-            padding: 8px;
-            width: 90%;
-        }
-        button {
-            padding: 10px;
-            background: #22c55e;
-            border: none;
-            color: white;
-            cursor: pointer;
-        }
-    </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CrediSense AI | Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body>
+<body class="dashboard-page">
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <div class="brand-mark">CS</div>
+                <div>
+                    <strong>CrediSense AI</strong>
+                    <span>Credit Risk SaaS</span>
+                </div>
+            </div>
 
-<h1>💳 Credit Risk Predictor</h1>
+            <nav class="sidebar-nav" aria-label="Main navigation">
+                <a href="#overview" class="active"><i data-lucide="layout-dashboard"></i> Overview</a>
+                <a href="#new-application"><i data-lucide="file-plus-2"></i> New Application</a>
+                <a href="#analytics"><i data-lucide="bar-chart-3"></i> Analytics</a>
+                {% if current_user.role in ["bank_officer", "risk_admin"] %}
+                <a href="#review"><i data-lucide="clipboard-check"></i> Review Queue</a>
+                {% endif %}
+                <a href="#assistant"><i data-lucide="message-square"></i> Advisor</a>
+            </nav>
 
-<form action="/predict" method="post">
-    <input type="number" name="age" placeholder="Age" required>
-    <input type="number" name="income" placeholder="Income" required>
-    <input type="number" name="loan_amount" placeholder="Loan Amount" required>
-    <input type="number" name="credit_score" placeholder="Credit Score" required>
-    <input type="number" name="loan_term_months" placeholder="Loan Term (months)" required>
-<input type="number" name="employment_years" placeholder="Employment Years" required>
+            <div class="account-box">
+                <div class="avatar">{{ current_user.name[:2].upper() }}</div>
+                <div>
+                    <strong>{{ current_user.name }}</strong>
+                    <span>{{ role_labels[current_user.role] }}</span>
+                </div>
+            </div>
 
-<input type="text" name="marital_status" placeholder="Marital Status (single/married)" required>
-<input type="text" name="education" placeholder="Education (graduate/non-graduate)" required>
-    
-    <button type="submit">Predict</button>
-</form>
+            <div class="plan-box">
+                <div>
+                    <span class="mini-label">Plan</span>
+                    <strong>{{ current_user.plan }}</strong>
+                    <small>{{ plan_limits.get(current_user.plan, 10) }} monthly decisions</small>
+                </div>
+                {% if current_user.plan == "Starter" %}
+                <form action="{{ url_for('upgrade_plan') }}" method="POST">
+                    <button type="submit" class="secondary-button full">
+                        <i data-lucide="sparkles"></i>
+                        Upgrade
+                    </button>
+                </form>
+                {% endif %}
+            </div>
 
-{% if prediction is not none %}
-    <h2>Prediction: {{ prediction }}</h2>
-    <h3>Probability: {{ probability }}</h3>
-{% endif %}
+            <a href="{{ url_for('logout') }}" class="logout-link"><i data-lucide="log-out"></i> Logout</a>
+        </aside>
 
+        <main class="workspace">
+            <header class="topbar" id="overview">
+                <div>
+                    <p class="eyebrow">{{ role_labels[current_user.role] }} Workspace</p>
+                    <h1>Credit risk command center</h1>
+                </div>
+                <div class="topbar-actions">
+                    <button id="voiceToggle" type="button" class="secondary-button" aria-pressed="true">
+                        <i data-lucide="volume-2"></i>
+                        Voice On
+                    </button>
+                    <a class="secondary-button" href="{{ url_for('health') }}"><i data-lucide="activity"></i> Health</a>
+                    <a class="primary-button" href="#new-application"><i data-lucide="plus"></i> Score Application</a>
+                </div>
+            </header>
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    <div class="flash-stack">
+                        {% for category, message in messages %}
+                            <div class="flash {{ category }}">{{ message }}</div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+
+            <section class="metric-grid" aria-label="Portfolio metrics">
+                <article class="metric-card positive">
+                    <span>Total Applications</span>
+                    <strong>{{ metrics.total }}</strong>
+                    <small>{{ metrics.approved }} approved, {{ metrics.rejected }} rejected</small>
+                </article>
+                <article class="metric-card teal">
+                    <span>Approval Rate</span>
+                    <strong>{{ metrics.approval_rate }}%</strong>
+                    <small>Across visible applications</small>
+                </article>
+                <article class="metric-card amber">
+                    <span>Average Risk</span>
+                    <strong>{{ metrics.avg_risk }}%</strong>
+                    <small>{{ metrics.in_review }} in review</small>
+                </article>
+                <article class="metric-card indigo">
+                    <span>Average Loan</span>
+                    <strong>${{ "{:,.0f}".format(metrics.avg_ticket) }}</strong>
+                    <small>Portfolio ticket size</small>
+                </article>
+            </section>
+
+            {% if current_user.role == "customer" %}
+            <section class="customer-finance-grid">
+                <section class="panel wallet-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Customer wallet</p>
+                            <h2>Loan wallet</h2>
+                        </div>
+                        <span class="pill">{{ customer_loans|length }} active</span>
+                    </div>
+                    <div class="loan-card-stack">
+                        {% for loan in customer_loans %}
+                        <article class="loan-card">
+                            <div>
+                                <span class="mini-label">Credited loan</span>
+                                <strong>${{ "{:,.0f}".format(loan.disbursed_amount) }}</strong>
+                                <small>Balance ${{ "{:,.2f}".format(loan.balance_amount) }}</small>
+                            </div>
+                            <div>
+                                <span class="mini-label">Payment due</span>
+                                <strong>${{ "{:,.2f}".format(loan.monthly_payment) }}</strong>
+                                <small>{{ loan.days_until_due }} days remaining</small>
+                            </div>
+                            <span class="status-chip neutral">{{ loan.payment_status_label }}</span>
+                            {% if loan.balance_amount > 0 %}
+                            <a class="primary-button" href="{{ url_for('fake_payment', loan_id=loan.id) }}">
+                                <i data-lucide="credit-card"></i>
+                                Pay now
+                            </a>
+                            {% else %}
+                            <span class="status-chip approved">Closed</span>
+                            {% endif %}
+                        </article>
+                        {% else %}
+                        <div class="empty-state compact-empty">
+                            <i data-lucide="wallet"></i>
+                            <h3>No credited loans yet</h3>
+                            <p>Approved offers will appear here with a Take Loan action.</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="panel offer-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Approved offers</p>
+                            <h2>Take loan</h2>
+                        </div>
+                        <span class="pill">{{ loan_offers|length }} ready</span>
+                    </div>
+                    <div class="offer-stack">
+                        {% for offer in loan_offers %}
+                        <article class="offer-card">
+                            <div>
+                                <span class="mini-label">Application #{{ offer.id }}</span>
+                                <strong>${{ "{:,.0f}".format(offer.loan_amount) }}</strong>
+                                <small>{{ offer.approval_probability }}% approval probability</small>
+                            </div>
+                            <form action="{{ url_for('take_loan', prediction_id=offer.id) }}" method="POST">
+                                <button type="submit" class="primary-button">
+                                    <i data-lucide="banknote"></i>
+                                    Take loan
+                                </button>
+                            </form>
+                        </article>
+                        {% else %}
+                        <div class="empty-state compact-empty">
+                            <i data-lucide="badge-check"></i>
+                            <h3>No approved offer waiting</h3>
+                            <p>Submit a strong application or wait for officer approval.</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="panel notification-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Mobile updates</p>
+                            <h2>Customer messages</h2>
+                        </div>
+                        <span class="pill">SMS demo</span>
+                    </div>
+                    <div class="notification-stack">
+                        {% for note in notifications %}
+                        <article class="notification-item">
+                            <div>
+                                <strong>{{ note.channel|upper }} to {{ note.recipient or "demo phone" }}</strong>
+                                <p>{{ note.message }}</p>
+                            </div>
+                            <span class="status-chip neutral">{{ note.status }}</span>
+                        </article>
+                        {% else %}
+                        <div class="empty-state compact-empty">
+                            <i data-lucide="message-circle"></i>
+                            <h3>No mobile messages yet</h3>
+                            <p>Approval, credit, and payment messages will appear here.</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </section>
+            </section>
+            {% endif %}
+
+            <section class="decision-grid">
+                <section class="panel" id="new-application">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Loan intake</p>
+                            <h2>New application</h2>
+                        </div>
+                        <span class="pill">SQL backed</span>
+                    </div>
+
+                    <form action="{{ url_for('create_prediction') }}" method="POST" class="application-form">
+                        <label>
+                            Applicant name
+                            <input name="name" value="{{ current_user.name if current_user.role == 'customer' else '' }}" placeholder="Applicant name" required>
+                        </label>
+                        <label>
+                            Email
+                            <input type="email" name="email" value="{{ current_user.email if current_user.role == 'customer' else '' }}" placeholder="applicant@example.com" required>
+                        </label>
+                        <label>
+                            Phone
+                            <input name="phone" placeholder="Contact number" required>
+                        </label>
+                        <label>
+                            Age
+                            <input type="number" name="age" min="18" max="80" placeholder="32" required>
+                        </label>
+                        <label>
+                            Annual income
+                            <input type="number" name="income" min="0" step="1000" placeholder="65000" required>
+                        </label>
+                        <label>
+                            Loan amount
+                            <input type="number" name="loan" min="0" step="1000" placeholder="22000" required>
+                        </label>
+                        <label>
+                            Loan term
+                            <input type="number" name="loan_term_months" min="12" max="120" step="12" value="36" required>
+                        </label>
+                        <label>
+                            Credit score
+                            <input type="number" name="score" min="300" max="900" placeholder="720" required>
+                        </label>
+                        <label>
+                            Marital status
+                            <select name="marital_status" required>
+                                <option value="single">Single</option>
+                                <option value="married">Married</option>
+                                <option value="divorced">Divorced</option>
+                            </select>
+                        </label>
+                        <label>
+                            Education
+                            <select name="education" required>
+                                <option value="high_school">High School</option>
+                                <option value="bachelor" selected>Bachelor</option>
+                                <option value="master">Master</option>
+                            </select>
+                        </label>
+                        <label>
+                            Dependents
+                            <input type="number" name="dependents" min="0" max="10" value="0" required>
+                        </label>
+                        <label>
+                            Experience
+                            <input type="number" name="experience" min="0" max="50" placeholder="5" required>
+                        </label>
+                        <button type="submit" class="primary-button form-submit">
+                            <i data-lucide="scan-line"></i>
+                            Analyze risk
+                        </button>
+                    </form>
+                </section>
+
+                <section class="panel decision-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Decision engine</p>
+                            <h2>Latest score</h2>
+                        </div>
+                        {% if last_prediction %}
+                        <span class="status-chip {{ 'approved' if last_prediction.result == 'Approved' else 'rejected' }}">{{ last_prediction.result }}</span>
+                        {% else %}
+                        <span class="status-chip neutral">Waiting</span>
+                        {% endif %}
+                    </div>
+
+                    {% if last_prediction %}
+                    <div class="decision-score">
+                        <div>
+                            <span>Approval probability</span>
+                            <strong>{{ last_prediction.approval_probability }}%</strong>
+                        </div>
+                        <div>
+                            <span>Default risk</span>
+                            <strong>{{ last_prediction.risk_score }}%</strong>
+                        </div>
+                    </div>
+                    <div class="risk-meter" aria-label="Risk meter">
+                        <span style="width: {{ last_prediction.risk_score }}%"></span>
+                    </div>
+                    <p class="decision-copy">{{ last_prediction.auto_explain }}</p>
+                    <div class="model-line">
+                        <i data-lucide="cpu"></i>
+                        <span>{{ last_prediction.model_source }}</span>
+                    </div>
+                    <div class="voice-actions">
+                        <button id="speakDecision" type="button" class="primary-button">
+                            <i data-lucide="volume-2"></i>
+                            Explain with voice
+                        </button>
+                        <button id="stopVoice" type="button" class="secondary-button">
+                            <i data-lucide="volume-x"></i>
+                            Stop voice
+                        </button>
+                    </div>
+                    <div class="factor-list">
+                        {% for factor in last_prediction.explain %}
+                        <div>
+                            <span>{{ factor.feature }}</span>
+                            <strong class="{{ 'good' if factor.impact > 0 else 'bad' }}">{{ '+' if factor.impact > 0 else '' }}{{ factor.impact }}%</strong>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <ul class="suggestion-list">
+                        {% for suggestion in last_prediction.suggestions %}
+                        <li>{{ suggestion }}</li>
+                        {% endfor %}
+                    </ul>
+                    {% else %}
+                    <div class="empty-state">
+                        <i data-lucide="radar"></i>
+                        <h3>No live decision yet</h3>
+                        <p>Submit an application to generate approval probability, risk score, and explainability factors.</p>
+                    </div>
+                    {% endif %}
+                </section>
+            </section>
+
+            <section class="analytics-grid" id="analytics">
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Portfolio split</h2>
+                    </div>
+                    <canvas id="decisionChart" height="220"></canvas>
+                </section>
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Risk trend</h2>
+                    </div>
+                    <canvas id="riskChart" height="220"></canvas>
+                </section>
+                <section class="panel wide-panel">
+                    <div class="panel-header">
+                        <h2>Income vs loan exposure</h2>
+                    </div>
+                    <canvas id="exposureChart" height="190"></canvas>
+                </section>
+            </section>
+
+            <section class="operations-grid">
+                <section class="panel simulator-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Scenario lab</p>
+                            <h2>What-if simulator</h2>
+                        </div>
+                        <span id="simBadge" class="status-chip neutral">Ready</span>
+                    </div>
+                    <div class="slider-grid">
+                        <label>Credit score <strong id="simScoreValue">690</strong><input id="simScore" type="range" min="300" max="900" value="690"></label>
+                        <label>Income <strong id="simIncomeValue">65000</strong><input id="simIncome" type="range" min="10000" max="200000" step="1000" value="65000"></label>
+                        <label>Loan <strong id="simLoanValue">25000</strong><input id="simLoan" type="range" min="1000" max="200000" step="1000" value="25000"></label>
+                        <label>Term <strong id="simTermValue">36</strong><input id="simTerm" type="range" min="12" max="120" step="12" value="36"></label>
+                        <label>Experience <strong id="simExpValue">5</strong><input id="simExp" type="range" min="0" max="30" value="5"></label>
+                    </div>
+                    <div class="sim-result">
+                        <div><span>Approval</span><strong id="simApproval">--%</strong></div>
+                        <div><span>Risk</span><strong id="simRisk">--%</strong></div>
+                    </div>
+                </section>
+
+                <section class="panel" id="assistant">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Advisor</p>
+                            <h2>AI loan assistant</h2>
+                        </div>
+                    </div>
+                    <div id="chatMessages" class="chat-messages">
+                        <div class="chat-bubble bot">Ask about rejection reasons, safe loan size, or approval improvement.</div>
+                    </div>
+                    <div class="quick-actions">
+                        <button type="button" data-question="Why was I rejected?">Rejected</button>
+                        <button type="button" data-question="How can I improve?">Improve</button>
+                        <button type="button" data-question="What is a safe loan amount?">Safe loan</button>
+                    </div>
+                    <div class="chat-input-row">
+                        <input id="chatInput" placeholder="Ask the advisor">
+                        <button id="voiceChat" type="button" class="secondary-button icon-button" aria-label="Ask with voice"><i data-lucide="mic"></i></button>
+                        <button id="sendChat" type="button" class="primary-button icon-button" aria-label="Send message"><i data-lucide="send"></i></button>
+                    </div>
+                    <p id="voiceStatus" class="voice-status">Voice assistant ready for prediction explanation and advisor replies.</p>
+                </section>
+            </section>
+
+            {% if current_user.role in ["bank_officer", "risk_admin"] %}
+            <section class="panel" id="review">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Operations</p>
+                        <h2>Officer review queue</h2>
+                    </div>
+                    <span class="pill">{{ review_queue|length }} open</span>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Applicant</th>
+                                <th>Loan</th>
+                                <th>Risk</th>
+                                <th>Status</th>
+                                <th>Review action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in review_queue %}
+                            <tr>
+                                <td>#{{ item.id }}</td>
+                                <td>{{ item.applicant_name or item.owner_name }}</td>
+                                <td>${{ "{:,.0f}".format(item.loan_amount) }}</td>
+                                <td>{{ item.risk_score }}% {{ item.risk_label }}</td>
+                                <td><span class="status-chip neutral">{{ item.status_label }}</span></td>
+                                <td>
+                                    <form action="{{ url_for('review_prediction', prediction_id=item.id) }}" method="POST" class="review-form">
+                                        <select name="status">
+                                            <option value="approved_by_officer">Approve</option>
+                                            <option value="needs_review">Keep Review</option>
+                                            <option value="declined">Decline</option>
+                                        </select>
+                                        <input name="review_note" placeholder="Officer note">
+                                        <button type="submit" class="secondary-button">Save</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="6" class="empty-row">No applications waiting for review.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            {% endif %}
+
+            <section class="panel history-panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Audit trail</p>
+                        <h2>Recent applications</h2>
+                    </div>
+                    <span class="pill">{{ recent_history|length }} shown</span>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Applicant</th>
+                                <th>Owner</th>
+                                <th>Income</th>
+                                <th>Loan</th>
+                                <th>Score</th>
+                                <th>Risk</th>
+                                <th>Decision</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in recent_history %}
+                            <tr>
+                                <td>#{{ item.id }}</td>
+                                <td>{{ item.applicant_name or "Applicant" }}</td>
+                                <td>{{ item.owner_name }}</td>
+                                <td>${{ "{:,.0f}".format(item.income) }}</td>
+                                <td>${{ "{:,.0f}".format(item.loan_amount) }}</td>
+                                <td>{{ "{:,.0f}".format(item.credit_score) }}</td>
+                                <td>{{ item.risk_score }}%</td>
+                                <td><span class="status-chip {{ 'approved' if item.result == 'Approved' else 'rejected' }}">{{ item.result }}</span></td>
+                                <td>{{ item.status_label }}</td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="9" class="empty-row">No applications yet.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        window.CREDISENSE = {{ chart_data|tojson }};
+        window.CREDISENSE_LAST_PREDICTION = {% if last_prediction %}{{ last_prediction|tojson }}{% else %}null{% endif %};
+    </script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

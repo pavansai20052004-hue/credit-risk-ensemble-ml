@@ -2,3 +2,10 @@ venv/
 .venv/
 __pycache__/
 models/best_model.joblib
+.env
+app.db
+*.db-wal
+*.db-shm
+data.csv
+users.csv
+*.log

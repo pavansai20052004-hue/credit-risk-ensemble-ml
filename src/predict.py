@@ -2,7 +2,10 @@ import argparse
 import joblib
 import numpy as np
 
-from utils import load_json, json_to_dataframe
+try:
+    from .utils import load_json, json_to_dataframe
+except ImportError:
+    from utils import load_json, json_to_dataframe
 
 
 def main():
@@ -24,7 +27,7 @@ def main():
 
     label = int(proba >= args.threshold)
 
-    print("✅ Prediction Result")
+    print("Prediction Result")
     print("Probability of Default:", round(proba, 6))
     print("Predicted Label (1=Default, 0=No Default):", label)
 

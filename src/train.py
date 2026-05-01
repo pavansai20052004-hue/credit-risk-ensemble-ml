@@ -1,4 +1,5 @@
 import argparse
+import os
 import joblib
 import numpy as np
 
@@ -6,15 +7,21 @@ from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import f1_score, classification_report
 
-from utils import load_dataset, normalize_target
-from preprocessing import get_feature_types, build_preprocessor
-from models import get_models
+try:
+    from .utils import load_dataset, normalize_target
+    from .preprocessing import get_feature_types, build_preprocessor
+    from .models import get_models
+except ImportError:
+    from utils import load_dataset, normalize_target
+    from preprocessing import get_feature_types, build_preprocessor
+    from models import get_models
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True, help="Path to dataset CSV")
     parser.add_argument("--target", default="default", help="Target column name")
+    parser.add_argument("--output-model", default="models/best_model.joblib", help="Path for the saved model")
     args = parser.parse_args()
 
     # 1) Load dataset
@@ -48,7 +55,7 @@ def main():
 
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-    print("\n✅ Training started...\n")
+    print("\nTraining started...\n")
 
     # 7) Train and compare models using CV F1 score
     for name, model in models.items():
@@ -73,18 +80,21 @@ def main():
             best_pipeline = pipeline
 
     # 8) Fit best model on full train data
-    print("\n✅ Best Model:", best_model_name, "with CV F1:", round(best_score, 4))
+    print("\nBest Model:", best_model_name, "with CV F1:", round(best_score, 4))
     best_pipeline.fit(X_train, y_train)
 
     # 9) Evaluate on test set
     y_pred = best_pipeline.predict(X_test)
 
-    print("\n📌 Test Set Report:\n")
+    print("\nTest Set Report:\n")
     print(classification_report(y_test, y_pred))
 
     # 10) Save model
-    joblib.dump(best_pipeline, "models/best_model.joblib")
-    print("\n✅ Model saved to: models/best_model.joblib")
+    output_dir = os.path.dirname(args.output_model)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    joblib.dump(best_pipeline, args.output_model)
+    print("\nModel saved to:", args.output_model)
 
 
 if __name__ == "__main__":
