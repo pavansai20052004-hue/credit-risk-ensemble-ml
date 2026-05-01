@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # CrediSense AI - Credit Risk SaaS
 
 CrediSense AI is a Flask and SQLite based credit-risk SaaS prototype for loan screening demos. It includes customer login, bank officer login, risk admin login, ML-backed approval scoring, explainability, review workflow, charts, a what-if simulator, and a lightweight advisor chatbot.
@@ -133,3 +134,45 @@ The best model is saved to `models/best_model.joblib`.
 ## Important Note
 
 This is an academic demonstration project. It should not be used for real lending decisions without real bank data, fairness testing, privacy review, stronger security controls, audit requirements, and regulatory validation.
+=======
+# Credit Risk Assessment using Ensemble Learning
+
+## Project Overview
+This project predicts whether a customer will default on a loan using Machine Learning ensemble models.
+
+## Technologies Used
+- Python
+- Pandas
+- Scikit-learn
+- XGBoost
+- Flask
+
+## Models Used
+- Logistic Regression
+- Random Forest
+- XGBoost
+
+Best Model selected using Cross Validation F1 Score.
+
+## How to Run
+
+1. Install requirements:
+pip install -r requirements.txt
+
+2. Train model:
+python src/train.py --data data/credit_dataset.csv --target default
+
+3. Run API:
+python app.py
+
+Server runs at:
+http://127.0.0.1:5000
+
+## Prediction Endpoint
+POST /predict
+
+Returns probability of default and predicted class.
+
+## Author
+Pavan Sai
+>>>>>>> 0eaa4cfa2a9644d4d94f7b492918778c797d197d
