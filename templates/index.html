@@ -118,6 +118,28 @@
                 </article>
             </section>
 
+            <section class="panel assurance-panel" aria-label="System assurance">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Production readiness</p>
+                        <h2>System assurance</h2>
+                    </div>
+                    <span class="pill">Live checks</span>
+                </div>
+                <div class="assurance-grid">
+                    {% for check in assurance_checks %}
+                    <article class="assurance-item {{ check.tone }}">
+                        <div class="assurance-icon"><i data-lucide="{{ check.icon }}"></i></div>
+                        <div>
+                            <span>{{ check.label }}</span>
+                            <strong>{{ check.value }}</strong>
+                            <small>{{ check.detail }}</small>
+                        </div>
+                    </article>
+                    {% endfor %}
+                </div>
+            </section>
+
             {% if current_user.role == "customer" %}
             <section class="customer-finance-grid">
                 <section class="panel wallet-panel">

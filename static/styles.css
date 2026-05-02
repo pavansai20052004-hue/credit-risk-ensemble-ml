@@ -559,6 +559,69 @@ select:focus {
     border-top: 4px solid var(--indigo);
 }
 
+.assurance-panel {
+    margin-bottom: 14px;
+}
+
+.assurance-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.assurance-item {
+    display: grid;
+    min-height: 142px;
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px;
+    background: var(--panel-soft);
+}
+
+.assurance-icon {
+    display: grid;
+    width: 36px;
+    height: 36px;
+    place-items: center;
+    border-radius: var(--radius);
+    background: #eef2f7;
+    color: var(--indigo);
+}
+
+.assurance-icon svg {
+    width: 18px;
+    height: 18px;
+}
+
+.assurance-item.approved .assurance-icon {
+    background: #dcfce7;
+    color: var(--green);
+}
+
+.assurance-item.rejected .assurance-icon {
+    background: #fee2e2;
+    color: var(--red);
+}
+
+.assurance-item span,
+.assurance-item small {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.45;
+}
+
+.assurance-item strong {
+    display: block;
+    margin: 5px 0 6px;
+    color: var(--ink);
+    font-size: 18px;
+    line-height: 1.2;
+}
+
 .customer-finance-grid {
     display: grid;
     grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
@@ -1140,6 +1203,7 @@ th {
 
 @media (max-width: 1180px) {
     .metric-grid,
+    .assurance-grid,
     .customer-finance-grid,
     .decision-grid,
     .analytics-grid,
@@ -1174,6 +1238,7 @@ th {
     }
 
     .metric-grid,
+    .assurance-grid,
     .customer-finance-grid,
     .analytics-grid,
     .operations-grid,
@@ -1213,6 +1278,7 @@ th {
     .loan-card,
     .offer-card,
     .notification-item,
+    .assurance-item,
     .applicant-record,
     .candidate-card,
     .daily-stats {

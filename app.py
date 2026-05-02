@@ -29,6 +29,20 @@ MODEL_FILE = os.path.join(BASE_DIR, "models", "best_model.joblib")
 DEFAULT_LOAN_TERM_MONTHS = 36
 OPEN_REVIEW_STATUSES = {"needs_review", "pre_approved"}
 FINAL_REJECTION_STATUS = "declined"
+STATUS_LABELS = {
+    "needs_review": "Needs Review",
+    "pre_approved": "AI Pre-Approved",
+    "approved_by_officer": "Officer Approved",
+    FINAL_REJECTION_STATUS: "Declined",
+    "loan_disbursed": "Loan Disbursed",
+}
+STATUS_TONES = {
+    "needs_review": "neutral",
+    "pre_approved": "approved",
+    "approved_by_officer": "approved",
+    FINAL_REJECTION_STATUS: "rejected",
+    "loan_disbursed": "approved",
+}
 
 VALID_ROLES = {
     "customer": "Customer",
@@ -53,9 +67,27 @@ EDUCATION_MODEL_MAP = {
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "0") == "1",
+    JSON_SORT_KEYS=False,
+)
 
 _model_loaded = False
 _credit_model = None
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), geolocation=(), payment=(), usb=()",
+    )
+    return response
 
 
 def now_iso():
@@ -212,6 +244,10 @@ def normalize_prediction_status(status, result=None, risk_score=None):
     if value in allowed:
         return value
     return decision_status(result or "Rejected", risk_score or 100)
+
+
+def prediction_status_label(status):
+    return STATUS_LABELS.get(status, status.replace("_", " ").title())
 
 
 def is_review_open(item):
@@ -880,6 +916,22 @@ def parse_int(name, default=0, min_value=None, max_value=None):
     return int(parse_float(name, default, min_value, max_value))
 
 
+def coerce_float(value, default=0, min_value=None, max_value=None):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    if min_value is not None:
+        parsed = max(float(min_value), parsed)
+    if max_value is not None:
+        parsed = min(float(max_value), parsed)
+    return parsed
+
+
+def coerce_int(value, default=0, min_value=None, max_value=None):
+    return int(coerce_float(value, default, min_value, max_value))
+
+
 def verify_password(stored_hash, password):
     if not stored_hash:
         return False
@@ -964,13 +1016,8 @@ def clean_prediction(row):
     item["credit_score"] = float(item.get("credit_score") or 0)
     item["risk_label"] = risk_label(item["risk_score"])
     item["status"] = normalize_prediction_status(item.get("status"), item.get("result"), item["risk_score"])
-    item["status_label"] = item["status"].replace("_", " ").title()
-    item["status_tone"] = {
-        "approved_by_officer": "approved",
-        "loan_disbursed": "approved",
-        "pre_approved": "approved",
-        FINAL_REJECTION_STATUS: "rejected",
-    }.get(item["status"], "neutral")
+    item["status_label"] = prediction_status_label(item["status"])
+    item["status_tone"] = STATUS_TONES.get(item["status"], "neutral")
     item["applicant_label"] = public_applicant_name(item)
     item["owner_label"] = public_customer_name(item)
     item["owner_detail"] = customer_contact_label(item)
@@ -1091,6 +1138,75 @@ def customer_loan_offers(user_id):
         (user_id,),
     )
     return [clean_prediction(row) for row in rows]
+
+
+def status_integrity_issue_count():
+    row = fetch_one(
+        """
+        SELECT COUNT(*) AS total
+        FROM predictions
+        WHERE lower(trim(coalesce(result, ''))) = 'rejected'
+          AND lower(replace(replace(coalesce(status, ''), ' ', '_'), '-', '_')) IN (
+              'needs_review', 'pre_approved', 'review', 'under_review', 'in_review',
+              'pending', 'pending_review', 'awaiting_review'
+          )
+        """
+    )
+    return int(row.get("total") or 0) if row else 0
+
+
+def notification_readiness_label():
+    ready = []
+    if email_configured():
+        ready.append("Email")
+    if sms_configured():
+        ready.append("SMS")
+    return " + ".join(ready) if ready else "Audit Log"
+
+
+def build_assurance_checks(review_queue):
+    integrity_issues = status_integrity_issue_count()
+    model_ready = os.path.exists(MODEL_FILE)
+    open_reviews = len(review_queue)
+    backend = database_label().title()
+
+    return [
+        {
+            "label": "Status Integrity",
+            "value": "Passed" if integrity_issues == 0 else f"{integrity_issues} Issues",
+            "detail": "Rejected decisions stay declined across history and review queues.",
+            "tone": "approved" if integrity_issues == 0 else "rejected",
+            "icon": "shield-check" if integrity_issues == 0 else "shield-alert",
+        },
+        {
+            "label": "Decision Engine",
+            "value": "Model Ready" if model_ready else "Policy Fallback",
+            "detail": "ML scoring is available with policy fallback for resilient demos.",
+            "tone": "approved" if model_ready else "neutral",
+            "icon": "brain-circuit",
+        },
+        {
+            "label": "Data Layer",
+            "value": backend,
+            "detail": "SQLite locally, PostgreSQL-ready through DATABASE_URL.",
+            "tone": "neutral",
+            "icon": "database",
+        },
+        {
+            "label": "Ops Queue",
+            "value": f"{open_reviews} Open",
+            "detail": "Only true review-ready applications remain actionable.",
+            "tone": "approved" if open_reviews == 0 else "neutral",
+            "icon": "clipboard-check",
+        },
+        {
+            "label": "Notifications",
+            "value": notification_readiness_label(),
+            "detail": "Every delivery attempt is recorded for audit traceability.",
+            "tone": "approved" if email_configured() or sms_configured() else "neutral",
+            "icon": "send",
+        },
+    ]
 
 
 def build_applicant_query(args):
@@ -1300,6 +1416,7 @@ def get_dashboard_payload(user, applicant_query=None):
     loan_offers = customer_loan_offers(user["id"]) if user["role"] == "customer" else []
     risk_insights = build_risk_admin_insights(history) if user["role"] == "risk_admin" else {}
     applicant_lookup = build_applicant_lookup(applicant_query or build_applicant_query({}))
+    review_queue = [item for item in history if is_review_open(item)][:12]
     loan_payment_summary = {
         "active": sum(1 for loan in customer_loans if loan.get("status") != "closed"),
         "pending": sum(
@@ -1313,13 +1430,14 @@ def get_dashboard_payload(user, applicant_query=None):
     return {
         "history": history,
         "recent_history": history[:12],
-        "review_queue": [item for item in history if is_review_open(item)][:12],
+        "review_queue": review_queue,
         "customer_loans": customer_loans,
         "loan_payment_summary": loan_payment_summary,
         "loan_offers": loan_offers,
         "notifications": notifications,
         "risk_insights": risk_insights,
         "applicant_lookup": applicant_lookup,
+        "assurance_checks": build_assurance_checks(review_queue),
         "metrics": {
             "total": total,
             "approved": approved,
@@ -1557,7 +1675,7 @@ CrediSense AI
         "model_source": prediction["source"],
         "explain": explanations,
         "suggestions": suggestions,
-        "status": status.replace("_", " ").title(),
+        "status": prediction_status_label(status),
     }
     flash(f"Application #{prediction_id} scored successfully.", "success")
     return redirect(url_for("dashboard"))
@@ -1887,11 +2005,11 @@ def get_data():
 @login_required
 def simulate():
     data = request.get_json(silent=True) or {}
-    score = float(data.get("score", 650) or 650)
-    income = float(data.get("income", 50000) or 50000)
-    loan = float(data.get("loan", 20000) or 20000)
-    experience = float(data.get("experience", 2) or 2)
-    loan_term_months = int(data.get("loan_term_months", DEFAULT_LOAN_TERM_MONTHS) or DEFAULT_LOAN_TERM_MONTHS)
+    score = coerce_float(data.get("score"), 650, 300, 900)
+    income = coerce_float(data.get("income"), 50000, 0)
+    loan = coerce_float(data.get("loan"), 20000, 0)
+    experience = coerce_float(data.get("experience"), 2, 0, 50)
+    loan_term_months = coerce_int(data.get("loan_term_months"), DEFAULT_LOAN_TERM_MONTHS, 12, 120)
 
     prediction = predict_credit_risk(
         age=30,
@@ -1920,9 +2038,9 @@ def simulate():
 def chat():
     data = request.get_json(silent=True) or {}
     message = str(data.get("message", "")).lower()
-    score = float(data.get("score", 0) or 0)
-    income = float(data.get("income", 0) or 0)
-    loan = float(data.get("loan", 0) or 0)
+    score = coerce_float(data.get("score"), 0, 0)
+    income = coerce_float(data.get("income"), 0, 0)
+    loan = coerce_float(data.get("loan"), 0, 0)
 
     if "reject" in message or "decline" in message:
         reply = "The most common rejection drivers are low credit score, high loan-to-income ratio, and weak employment stability."
@@ -1957,6 +2075,7 @@ def health():
             "model_file": os.path.exists(MODEL_FILE),
             "email_configured": email_configured(),
             "sms_configured": sms_configured(),
+            "status_integrity_issues": status_integrity_issue_count(),
         }
     )
 
