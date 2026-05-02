@@ -22,7 +22,8 @@ function addChatBubble(text, type) {
 }
 
 const voiceState = {
-    enabled: localStorage.getItem("credisenseVoiceEnabled") !== "false",
+    enabled: localStorage.getItem("credisenseVoiceEnabled") === "true",
+    unlocked: false,
     speaking: false,
 };
 
@@ -45,8 +46,8 @@ function updateVoiceToggle() {
 
     toggle.setAttribute("aria-pressed", String(voiceState.enabled));
     toggle.innerHTML = voiceState.enabled
-        ? '<i data-lucide="volume-2"></i> Voice On'
-        : '<i data-lucide="volume-x"></i> Voice Off';
+        ? '<i data-lucide="volume-2"></i> Voice Ready'
+        : '<i data-lucide="volume-x"></i> Enable Voice';
     initIcons();
 }
 
@@ -75,11 +76,37 @@ function normalizeSpeechText(text) {
         .trim();
 }
 
+function unlockVoiceFromGesture(options = {}) {
+    if (!voiceSupported()) return false;
+    if (voiceState.unlocked) return true;
+
+    voiceState.unlocked = true;
+    if (!options.silent) return true;
+
+    try {
+        const unlockUtterance = new SpeechSynthesisUtterance(".");
+        unlockUtterance.volume = 0;
+        unlockUtterance.rate = 1;
+        window.speechSynthesis.speak(unlockUtterance);
+        return true;
+    } catch (error) {
+        voiceState.unlocked = false;
+        return false;
+    }
+}
+
 function speakText(text, options = {}) {
     if (!voiceState.enabled && !options.force) return;
     if (!voiceSupported()) {
         setVoiceStatus("Voice output is not supported in this browser.");
         return;
+    }
+    if (!voiceState.unlocked && !options.userGesture) {
+        setVoiceStatus("Click Enable Voice or Speak Latest once to allow browser voice playback.");
+        return;
+    }
+    if (options.userGesture) {
+        unlockVoiceFromGesture();
     }
 
     const speechText = normalizeSpeechText(text);
@@ -103,9 +130,11 @@ function speakText(text, options = {}) {
         voiceState.speaking = false;
         setVoiceStatus("Voice assistant ready.");
     };
-    utterance.onerror = () => {
+    utterance.onerror = (event) => {
         voiceState.speaking = false;
-        setVoiceStatus("Voice playback was blocked. Use the voice button to play it.");
+        voiceState.unlocked = false;
+        const reason = event.error ? ` (${event.error})` : "";
+        setVoiceStatus(`Voice playback was blocked${reason}. Click Speak Latest or Enable Voice again.`);
     };
 
     window.speechSynthesis.speak(utterance);
@@ -115,6 +144,12 @@ function stopVoice() {
     if (voiceSupported()) window.speechSynthesis.cancel();
     voiceState.speaking = false;
     setVoiceStatus("Voice stopped.");
+}
+
+function prepareVoiceForUserAction() {
+    if (voiceState.enabled) {
+        unlockVoiceFromGesture({ silent: true });
+    }
 }
 
 function buildDecisionSpeech(prediction) {
@@ -371,15 +406,24 @@ function initChat() {
     const input = document.getElementById("chatInput");
 
     if (sendButton) {
-        sendButton.addEventListener("click", () => sendChat());
+        sendButton.addEventListener("click", () => {
+            prepareVoiceForUserAction();
+            sendChat();
+        });
     }
     if (input) {
         input.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") sendChat();
+            if (event.key === "Enter") {
+                prepareVoiceForUserAction();
+                sendChat();
+            }
         });
     }
     document.querySelectorAll("[data-question]").forEach((button) => {
-        button.addEventListener("click", () => sendChat(button.dataset.question));
+        button.addEventListener("click", () => {
+            prepareVoiceForUserAction();
+            sendChat(button.dataset.question);
+        });
     });
 }
 
@@ -392,6 +436,10 @@ function initVoiceAssistant() {
         setVoiceStatus("Voice output is not supported in this browser.");
     }
 
+    if (!voiceState.enabled) {
+        setVoiceStatus("Click Enable Voice before using spoken explanations.");
+    }
+
     const toggle = document.getElementById("voiceToggle");
     if (toggle) {
         toggle.addEventListener("click", () => {
@@ -399,7 +447,10 @@ function initVoiceAssistant() {
             localStorage.setItem("credisenseVoiceEnabled", String(voiceState.enabled));
             updateVoiceToggle();
             if (voiceState.enabled) {
-                speakText("Voice assistant enabled. I can explain risk predictions and advisor replies.", { force: true });
+                speakText("Voice assistant enabled. I can explain risk predictions and advisor replies.", {
+                    force: true,
+                    userGesture: true,
+                });
             } else {
                 stopVoice();
                 setVoiceStatus("Voice assistant muted.");
@@ -409,7 +460,12 @@ function initVoiceAssistant() {
 
     const speakButton = document.getElementById("speakDecision");
     if (speakButton) {
-        speakButton.addEventListener("click", () => speakLatestDecision({ force: true }));
+        speakButton.addEventListener("click", () => {
+            voiceState.enabled = true;
+            localStorage.setItem("credisenseVoiceEnabled", "true");
+            updateVoiceToggle();
+            speakLatestDecision({ force: true, userGesture: true });
+        });
     }
 
     const stopButton = document.getElementById("stopVoice");
@@ -420,6 +476,7 @@ function initVoiceAssistant() {
     const micButton = document.getElementById("voiceChat");
     if (micButton) {
         micButton.addEventListener("click", () => {
+            unlockVoiceFromGesture({ silent: true });
             if (!recognitionSupported()) {
                 speakText("Voice input is not supported in this browser.", { force: true });
                 return;
@@ -443,7 +500,7 @@ function initVoiceAssistant() {
 
                 if (/explain|prediction|decision|risk result/i.test(transcript)) {
                     addChatBubble(transcript, "user");
-                    speakLatestDecision({ force: true });
+                    speakLatestDecision({ force: true, userGesture: true });
                 } else {
                     sendChat(transcript);
                 }
@@ -466,7 +523,7 @@ function initVoiceAssistant() {
         const predictionKey = `prediction-${prediction.id}-${prediction.result}-${prediction.risk_score}`;
         if (sessionStorage.getItem("credisenseLastSpokenPrediction") !== predictionKey) {
             sessionStorage.setItem("credisenseLastSpokenPrediction", predictionKey);
-            window.setTimeout(() => speakLatestDecision(), 900);
+            setVoiceStatus("New decision ready. Click Speak Latest to hear the explanation.");
         }
     }
 }
