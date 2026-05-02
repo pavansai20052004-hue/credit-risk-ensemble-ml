@@ -23,10 +23,17 @@
 
             <nav class="sidebar-nav" aria-label="Main navigation">
                 <a href="#overview" class="active"><i data-lucide="layout-dashboard"></i> Overview</a>
+                {% if current_user.role == "customer" %}
                 <a href="#new-application"><i data-lucide="file-plus-2"></i> New Application</a>
+                {% else %}
+                <a href="#applicant-data"><i data-lucide="search"></i> Applicant Data</a>
+                {% endif %}
                 <a href="#analytics"><i data-lucide="bar-chart-3"></i> Analytics</a>
                 {% if current_user.role in ["bank_officer", "risk_admin"] %}
                 <a href="#review"><i data-lucide="clipboard-check"></i> Review Queue</a>
+                {% endif %}
+                {% if current_user.role == "risk_admin" %}
+                <a href="#risk-insights"><i data-lucide="shield-alert"></i> Risk Insights</a>
                 {% endif %}
                 <a href="#assistant"><i data-lucide="message-square"></i> Advisor</a>
             </nav>
@@ -70,7 +77,11 @@
                         Voice On
                     </button>
                     <a class="secondary-button" href="{{ url_for('health') }}"><i data-lucide="activity"></i> Health</a>
+                    {% if current_user.role == "customer" %}
                     <a class="primary-button" href="#new-application"><i data-lucide="plus"></i> Score Application</a>
+                    {% else %}
+                    <a class="primary-button" href="#applicant-data"><i data-lucide="search"></i> Find Applicant</a>
+                    {% endif %}
                 </div>
             </header>
 
@@ -115,7 +126,7 @@
                             <p class="eyebrow">Customer wallet</p>
                             <h2>Loan wallet</h2>
                         </div>
-                        <span class="pill">{{ customer_loans|length }} active</span>
+                        <span class="pill">{{ loan_payment_summary.pending }} pending &middot; {{ loan_payment_summary.active }} active</span>
                     </div>
                     <div class="loan-card-stack">
                         {% for loan in customer_loans %}
@@ -126,11 +137,22 @@
                                 <small>Balance ${{ "{:,.2f}".format(loan.balance_amount) }}</small>
                             </div>
                             <div>
-                                <span class="mini-label">Payment due</span>
-                                <strong>${{ "{:,.2f}".format(loan.monthly_payment) }}</strong>
-                                <small>{{ loan.days_until_due }} days remaining</small>
+                                <span class="mini-label">{{ "Next due" if loan.payment_status == "paid" else "Payment due" }}</span>
+                                <strong>${{ "{:,.2f}".format(loan.payment_due_amount) }}</strong>
+                                <small>
+                                    {% if loan.status == "closed" %}
+                                    Paid off
+                                    {% elif loan.payment_status == "paid" %}
+                                    Next cycle in {{ loan.days_until_due }} days
+                                    {% else %}
+                                    {{ loan.days_until_due }} days remaining
+                                    {% endif %}
+                                </small>
                             </div>
-                            <span class="status-chip neutral">{{ loan.payment_status_label }}</span>
+                            <div class="loan-progress">
+                                <span class="status-chip {{ loan.payment_status_tone }}">{{ loan.payment_status_label }}</span>
+                                <small>{{ loan.payments_made }} payments &middot; ${{ "{:,.2f}".format(loan.total_paid) }} paid</small>
+                            </div>
                             {% if loan.balance_amount > 0 %}
                             <a class="primary-button" href="{{ url_for('fake_payment', loan_id=loan.id) }}">
                                 <i data-lucide="credit-card"></i>
@@ -186,10 +208,10 @@
                 <section class="panel notification-panel">
                     <div class="panel-header">
                         <div>
-                            <p class="eyebrow">Mobile updates</p>
-                            <h2>Customer messages</h2>
+                            <p class="eyebrow">Delivery updates</p>
+                            <h2>Customer notifications</h2>
                         </div>
-                        <span class="pill">SMS demo</span>
+                        <span class="pill">Email + SMS</span>
                     </div>
                     <div class="notification-stack">
                         {% for note in notifications %}
@@ -203,8 +225,8 @@
                         {% else %}
                         <div class="empty-state compact-empty">
                             <i data-lucide="message-circle"></i>
-                            <h3>No mobile messages yet</h3>
-                            <p>Approval, credit, and payment messages will appear here.</p>
+                            <h3>No notifications yet</h3>
+                            <p>Approval, credit, and payment delivery records will appear here.</p>
                         </div>
                         {% endfor %}
                     </div>
@@ -213,80 +235,81 @@
             {% endif %}
 
             <section class="decision-grid">
-                <section class="panel" id="new-application">
+                <section class="panel" id="{{ 'new-application' if current_user.role == 'customer' else 'applicant-data' }}">
                     <div class="panel-header">
                         <div>
-                            <p class="eyebrow">Loan intake</p>
-                            <h2>New application</h2>
+                            <p class="eyebrow">{{ "Loan intake" if current_user.role == "customer" else "Applicant records" }}</p>
+                            <h2>{{ "New application" if current_user.role == "customer" else "Applicant data" }}</h2>
                         </div>
-                        <span class="pill">SQL backed</span>
+                        <span class="pill">{{ "SQL backed" if current_user.role == "customer" else "History lookup" }}</span>
                     </div>
 
-                    <form action="{{ url_for('create_prediction') }}" method="POST" class="application-form">
+                    <form action="{{ url_for('create_prediction') if current_user.role == 'customer' else url_for('dashboard') }}" method="{{ 'POST' if current_user.role == 'customer' else 'GET' }}" class="application-form">
                         <label>
                             Applicant name
-                            <input name="name" value="{{ current_user.name if current_user.role == 'customer' else '' }}" placeholder="Applicant name" required>
+                            <input name="name" value="{{ current_user.name if current_user.role == 'customer' else applicant_lookup.query.name }}" placeholder="Applicant name" {% if current_user.role == 'customer' %}required{% endif %}>
                         </label>
                         <label>
                             Email
-                            <input type="email" name="email" value="{{ current_user.email if current_user.role == 'customer' else '' }}" placeholder="applicant@example.com" required>
+                            <input type="email" name="email" value="{{ current_user.email if current_user.role == 'customer' else applicant_lookup.query.email }}" placeholder="applicant@example.com" {% if current_user.role == 'customer' %}required{% endif %}>
                         </label>
                         <label>
                             Phone
-                            <input name="phone" placeholder="Contact number" required>
+                            <input name="phone" value="{{ applicant_lookup.query.phone if current_user.role != 'customer' else '' }}" placeholder="Contact number" {% if current_user.role == 'customer' %}required{% endif %}>
                         </label>
                         <label>
                             Age
-                            <input type="number" name="age" min="18" max="80" placeholder="32" required>
+                            <input type="number" name="age" min="18" max="80" value="{{ applicant_lookup.query.age if current_user.role != 'customer' else '' }}" placeholder="32" {% if current_user.role == 'customer' %}required{% endif %}>
                         </label>
                         <label>
                             Annual income
-                            <input type="number" name="income" min="0" step="1000" placeholder="65000" required>
+                            <input type="number" name="income" min="0" step="1000" value="{{ applicant_lookup.query.income if current_user.role != 'customer' else '' }}" placeholder="65000" {% if current_user.role == 'customer' %}required{% endif %}>
                         </label>
                         <label>
                             Loan amount
-                            <input type="number" name="loan" min="0" step="1000" placeholder="22000" required>
+                            <input type="number" name="loan" min="0" step="1000" value="{{ applicant_lookup.query.loan if current_user.role != 'customer' else '' }}" placeholder="22000" {% if current_user.role == 'customer' %}required{% endif %}>
                         </label>
                         <label>
                             Loan term
-                            <input type="number" name="loan_term_months" min="12" max="120" step="12" value="36" required>
+                            <input type="number" name="loan_term_months" min="12" max="120" step="12" value="{{ '36' if current_user.role == 'customer' else applicant_lookup.query.loan_term_months }}" {% if current_user.role == 'customer' %}required{% endif %}>
                         </label>
                         <label>
                             Credit score
-                            <input type="number" name="score" min="300" max="900" placeholder="720" required>
+                            <input type="number" name="score" min="300" max="900" value="{{ applicant_lookup.query.score if current_user.role != 'customer' else '' }}" placeholder="720" {% if current_user.role == 'customer' %}required{% endif %}>
                         </label>
                         <label>
                             Marital status
-                            <select name="marital_status" required>
-                                <option value="single">Single</option>
-                                <option value="married">Married</option>
-                                <option value="divorced">Divorced</option>
+                            <select name="marital_status" {% if current_user.role == 'customer' %}required{% endif %}>
+                                <option value="single" {% if applicant_lookup.query.marital_status == "single" %}selected{% endif %}>Single</option>
+                                <option value="married" {% if applicant_lookup.query.marital_status == "married" %}selected{% endif %}>Married</option>
+                                <option value="divorced" {% if applicant_lookup.query.marital_status == "divorced" %}selected{% endif %}>Divorced</option>
                             </select>
                         </label>
                         <label>
                             Education
-                            <select name="education" required>
-                                <option value="high_school">High School</option>
-                                <option value="bachelor" selected>Bachelor</option>
-                                <option value="master">Master</option>
+                            <select name="education" {% if current_user.role == 'customer' %}required{% endif %}>
+                                <option value="high_school" {% if applicant_lookup.query.education == "high_school" %}selected{% endif %}>High School</option>
+                                <option value="bachelor" {% if current_user.role == "customer" or applicant_lookup.query.education == "bachelor" %}selected{% endif %}>Bachelor</option>
+                                <option value="master" {% if applicant_lookup.query.education == "master" %}selected{% endif %}>Master</option>
                             </select>
                         </label>
                         <label>
                             Dependents
-                            <input type="number" name="dependents" min="0" max="10" value="0" required>
+                            <input type="number" name="dependents" min="0" max="10" value="{{ '0' if current_user.role == 'customer' else applicant_lookup.query.dependents }}" {% if current_user.role == 'customer' %}required{% endif %}>
                         </label>
                         <label>
                             Experience
-                            <input type="number" name="experience" min="0" max="50" placeholder="5" required>
+                            <input type="number" name="experience" min="0" max="50" value="{{ applicant_lookup.query.experience if current_user.role != 'customer' else '' }}" placeholder="5" {% if current_user.role == 'customer' %}required{% endif %}>
                         </label>
                         <button type="submit" class="primary-button form-submit">
-                            <i data-lucide="scan-line"></i>
-                            Analyze risk
+                            <i data-lucide="{{ 'scan-line' if current_user.role == 'customer' else 'search' }}"></i>
+                            {{ "Analyze risk" if current_user.role == "customer" else "Find applicant history" }}
                         </button>
                     </form>
                 </section>
 
-                <section class="panel decision-panel">
+                <section class="panel decision-panel {{ 'applicant-history-panel' if current_user.role != 'customer' else '' }}">
+                    {% if current_user.role == "customer" %}
                     <div class="panel-header">
                         <div>
                             <p class="eyebrow">Decision engine</p>
@@ -347,6 +370,90 @@
                         <h3>No live decision yet</h3>
                         <p>Submit an application to generate approval probability, risk score, and explainability factors.</p>
                     </div>
+                    {% endif %}
+                    {% else %}
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Applicant intelligence</p>
+                            <h2>Applicant history</h2>
+                        </div>
+                        <span class="pill">{{ applicant_lookup.summary.total }} records</span>
+                    </div>
+
+                    {% if applicant_lookup.searched %}
+                    <div class="decision-score applicant-summary">
+                        <div>
+                            <span>Applications</span>
+                            <strong>{{ applicant_lookup.summary.total }}</strong>
+                        </div>
+                        <div>
+                            <span>Active loans</span>
+                            <strong>{{ applicant_lookup.summary.active_loans }}</strong>
+                        </div>
+                        <div>
+                            <span>Outstanding</span>
+                            <strong>${{ "{:,.0f}".format(applicant_lookup.summary.outstanding) }}</strong>
+                        </div>
+                        <div>
+                            <span>Total paid</span>
+                            <strong>${{ "{:,.0f}".format(applicant_lookup.summary.total_paid) }}</strong>
+                        </div>
+                    </div>
+
+                    <div class="history-subsection">
+                        <div class="mini-section-title">
+                            <strong>Loan history</strong>
+                            <span>{{ applicant_lookup.loans|length }} matched</span>
+                        </div>
+                        <div class="applicant-record-stack">
+                            {% for loan in applicant_lookup.loans %}
+                            <article class="applicant-record">
+                                <div>
+                                    <strong>Loan #{{ loan.id }} &middot; {{ loan.status_label }}</strong>
+                                    <small>Credited ${{ "{:,.0f}".format(loan.disbursed_amount) }} &middot; Balance ${{ "{:,.2f}".format(loan.balance_amount) }} &middot; {{ loan.payments_made }} payments</small>
+                                </div>
+                                <span class="status-chip {{ loan.payment_status_tone }}">{{ loan.payment_status_label }}</span>
+                            </article>
+                            {% else %}
+                            <div class="empty-state compact-empty">
+                                <i data-lucide="wallet"></i>
+                                <h3>No loan history found</h3>
+                                <p>Matched disbursed loans will appear here after the customer takes an approved loan.</p>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <div class="history-subsection">
+                        <div class="mini-section-title">
+                            <strong>Application history</strong>
+                            <span>{{ applicant_lookup.history|length }} matched</span>
+                        </div>
+                        <div class="applicant-record-stack">
+                            {% for item in applicant_lookup.history %}
+                            <article class="applicant-record">
+                                <div>
+                                    <strong>#{{ item.id }} {{ item.applicant_label }}</strong>
+                                    <small>${{ "{:,.0f}".format(item.loan_amount) }} loan &middot; {{ item.risk_score }}% risk &middot; {{ item.created_at_label }}</small>
+                                </div>
+                                <span class="status-chip {{ item.status_tone }}">{{ item.status_label }}</span>
+                            </article>
+                            {% else %}
+                            <div class="empty-state compact-empty">
+                                <i data-lucide="file-search"></i>
+                                <h3>No application history found</h3>
+                                <p>Try searching with the exact email or phone number.</p>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="empty-state">
+                        <i data-lucide="search"></i>
+                        <h3>Search an applicant</h3>
+                        <p>Use applicant name, email, or phone to load previous applications, approvals, loans, and repayment history.</p>
+                    </div>
+                    {% endif %}
                     {% endif %}
                 </section>
             </section>
@@ -443,10 +550,10 @@
                             {% for item in review_queue %}
                             <tr>
                                 <td>#{{ item.id }}</td>
-                                <td>{{ item.applicant_name or item.owner_name }}</td>
+                                <td>{{ item.applicant_label }}</td>
                                 <td>${{ "{:,.0f}".format(item.loan_amount) }}</td>
                                 <td>{{ item.risk_score }}% {{ item.risk_label }}</td>
-                                <td><span class="status-chip neutral">{{ item.status_label }}</span></td>
+                                <td><span class="status-chip {{ item.status_tone }}">{{ item.status_label }}</span></td>
                                 <td>
                                     <form action="{{ url_for('review_prediction', prediction_id=item.id) }}" method="POST" class="review-form">
                                         <select name="status">
@@ -470,7 +577,128 @@
             </section>
             {% endif %}
 
-            <section class="panel history-panel">
+            {% if current_user.role == "risk_admin" %}
+            <section class="risk-admin-grid" id="risk-insights">
+                <section class="panel insight-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Risk command</p>
+                            <h2>Top risk candidates</h2>
+                        </div>
+                        <span class="pill">{{ risk_insights.top_risk_candidates|length }} flagged</span>
+                    </div>
+                    <div class="candidate-stack">
+                        {% for item in risk_insights.top_risk_candidates %}
+                        <article class="candidate-card">
+                            <div class="candidate-main">
+                                <strong>{{ item.applicant_label }}</strong>
+                                <small>{{ item.owner_detail or item.owner_label }} &middot; Loan ${{ "{:,.0f}".format(item.loan_amount) }} &middot; Score {{ "{:,.0f}".format(item.credit_score) }}</small>
+                                <div class="risk-meter compact-meter" aria-label="Candidate risk">
+                                    <span style="width: {{ item.risk_score }}%"></span>
+                                </div>
+                            </div>
+                            <div class="candidate-score danger">
+                                <strong>{{ item.risk_score }}%</strong>
+                                <span>{{ item.risk_label }}</span>
+                            </div>
+                        </article>
+                        {% else %}
+                        <div class="empty-state compact-empty">
+                            <i data-lucide="shield-check"></i>
+                            <h3>No risk candidates yet</h3>
+                            <p>High-risk applications will appear here as soon as they are scored.</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="panel insight-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Daily performers</p>
+                            <h2>Best candidates today</h2>
+                        </div>
+                        <span class="pill">{{ risk_insights.today_label }}</span>
+                    </div>
+                    <div class="daily-stats">
+                        <div>
+                            <span>Scored today</span>
+                            <strong>{{ risk_insights.today_total }}</strong>
+                        </div>
+                        <div>
+                            <span>Approval rate</span>
+                            <strong>{{ risk_insights.today_approval_rate }}%</strong>
+                        </div>
+                        <div>
+                            <span>Avg risk</span>
+                            <strong>{{ risk_insights.today_avg_risk }}%</strong>
+                        </div>
+                    </div>
+                    <div class="candidate-stack">
+                        {% for item in risk_insights.daily_best_candidates %}
+                        <article class="candidate-card best-candidate">
+                            <div class="candidate-main">
+                                <strong>{{ item.applicant_label }}</strong>
+                                <small>{{ item.approval_probability }}% approval &middot; Score {{ "{:,.0f}".format(item.credit_score) }} &middot; Loan ${{ "{:,.0f}".format(item.loan_amount) }}</small>
+                            </div>
+                            <div class="candidate-score success">
+                                <strong>{{ item.risk_score }}%</strong>
+                                <span>risk</span>
+                            </div>
+                        </article>
+                        {% else %}
+                        <div class="empty-state compact-empty">
+                            <i data-lucide="badge-check"></i>
+                            <h3>No scored candidates today</h3>
+                            <p>Today's strongest approved or review-ready profiles will appear here.</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </section>
+            </section>
+
+            <section class="panel approval-history-panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Officer accountability</p>
+                        <h2>Officer approval history</h2>
+                    </div>
+                    <span class="pill">{{ risk_insights.officer_approvals|length }} approvals</span>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Officer</th>
+                                <th>Applicant</th>
+                                <th>Customer</th>
+                                <th>Loan</th>
+                                <th>Risk</th>
+                                <th>Reviewed</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in risk_insights.officer_approvals %}
+                            <tr>
+                                <td><strong class="table-title">{{ item.reviewer_name }}</strong></td>
+                                <td>{{ item.applicant_label }}</td>
+                                <td>{{ item.owner_label }}</td>
+                                <td>${{ "{:,.0f}".format(item.loan_amount) }}</td>
+                                <td>{{ item.risk_score }}% {{ item.risk_label }}</td>
+                                <td>{{ item.reviewed_at_label or item.created_at_label }}</td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="6" class="empty-row">No officer-approved loans yet.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            {% endif %}
+
+            <section class="panel history-panel" id="history">
                 <div class="panel-header">
                     <div>
                         <p class="eyebrow">Audit trail</p>
@@ -484,31 +712,51 @@
                             <tr>
                                 <th>ID</th>
                                 <th>Applicant</th>
-                                <th>Owner</th>
+                                <th>Customer</th>
                                 <th>Income</th>
                                 <th>Loan</th>
                                 <th>Score</th>
                                 <th>Risk</th>
                                 <th>Decision</th>
                                 <th>Status</th>
+                                {% if current_user.role in ["bank_officer", "risk_admin"] %}
+                                <th>Reviewed by</th>
+                                <th>Reviewed</th>
+                                {% endif %}
                             </tr>
                         </thead>
                         <tbody>
                             {% for item in recent_history %}
                             <tr>
                                 <td>#{{ item.id }}</td>
-                                <td>{{ item.applicant_name or "Applicant" }}</td>
-                                <td>{{ item.owner_name }}</td>
+                                <td>{{ item.applicant_label }}</td>
+                                <td>
+                                    <strong class="table-title">{{ item.owner_label }}</strong>
+                                    {% if item.owner_detail %}
+                                    <small class="table-detail">{{ item.owner_detail }}</small>
+                                    {% endif %}
+                                </td>
                                 <td>${{ "{:,.0f}".format(item.income) }}</td>
                                 <td>${{ "{:,.0f}".format(item.loan_amount) }}</td>
                                 <td>{{ "{:,.0f}".format(item.credit_score) }}</td>
                                 <td>{{ item.risk_score }}%</td>
                                 <td><span class="status-chip {{ 'approved' if item.result == 'Approved' else 'rejected' }}">{{ item.result }}</span></td>
-                                <td>{{ item.status_label }}</td>
+                                <td><span class="status-chip {{ item.status_tone }}">{{ item.status_label }}</span></td>
+                                {% if current_user.role in ["bank_officer", "risk_admin"] %}
+                                <td>
+                                    <strong class="table-title">{{ item.review_owner_label }}</strong>
+                                    {% if item.reviewer_name and item.result == "Approved" %}
+                                    <small class="table-detail">Approved {{ item.applicant_label }}</small>
+                                    {% elif item.reviewer_name %}
+                                    <small class="table-detail">Reviewed application</small>
+                                    {% endif %}
+                                </td>
+                                <td>{{ item.reviewed_at_label or "-" }}</td>
+                                {% endif %}
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="9" class="empty-row">No applications yet.</td>
+                                <td colspan="{{ 11 if current_user.role in ['bank_officer', 'risk_admin'] else 9 }}" class="empty-row">No applications yet.</td>
                             </tr>
                             {% endfor %}
                         </tbody>

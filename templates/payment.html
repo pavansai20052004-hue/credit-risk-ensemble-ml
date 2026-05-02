@@ -35,11 +35,19 @@
                 </div>
                 <div>
                     <span>Pay now</span>
-                    <strong>${{ "{:,.2f}".format(loan.monthly_payment) }}</strong>
+                    <strong>${{ "{:,.2f}".format(loan.payment_due_amount) }}</strong>
                 </div>
                 <div>
                     <span>Due time</span>
                     <strong>{{ loan.days_until_due }} days</strong>
+                </div>
+                <div>
+                    <span>Payments made</span>
+                    <strong>{{ loan.payments_made }}</strong>
+                </div>
+                <div>
+                    <span>Total paid</span>
+                    <strong>${{ "{:,.2f}".format(loan.total_paid) }}</strong>
                 </div>
             </div>
 

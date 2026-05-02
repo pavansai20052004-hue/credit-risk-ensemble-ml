@@ -593,6 +593,18 @@ select:focus {
     grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto auto;
 }
 
+.loan-progress {
+    display: grid;
+    gap: 6px;
+    justify-items: start;
+}
+
+.loan-progress small {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+
 .offer-card {
     grid-template-columns: 1fr auto;
 }
@@ -806,6 +818,61 @@ select:focus {
     line-height: 1.6;
 }
 
+.applicant-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.history-subsection {
+    display: grid;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.mini-section-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.mini-section-title strong {
+    font-size: 14px;
+}
+
+.mini-section-title span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.applicant-record-stack {
+    display: grid;
+    gap: 8px;
+}
+
+.applicant-record {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px;
+    background: var(--panel-soft);
+}
+
+.applicant-record strong,
+.applicant-record small {
+    display: block;
+}
+
+.applicant-record small {
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
 .empty-state {
     display: grid;
     min-height: 300px;
@@ -837,7 +904,8 @@ select:focus {
 }
 
 .analytics-grid,
-.operations-grid {
+.operations-grid,
+.risk-admin-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 14px;
@@ -973,12 +1041,110 @@ th {
     margin-bottom: 14px;
 }
 
+.approval-history-panel {
+    margin-bottom: 14px;
+}
+
+.candidate-stack {
+    display: grid;
+    gap: 10px;
+}
+
+.candidate-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px;
+    background: var(--panel-soft);
+}
+
+.candidate-main strong,
+.table-title {
+    display: block;
+    color: var(--ink);
+    font-size: 14px;
+}
+
+.candidate-main small,
+.table-detail {
+    display: block;
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.candidate-score {
+    min-width: 86px;
+    text-align: right;
+}
+
+.candidate-score strong {
+    display: block;
+    font-size: 24px;
+}
+
+.candidate-score span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.candidate-score.danger strong {
+    color: var(--red);
+}
+
+.candidate-score.success strong {
+    color: var(--green);
+}
+
+.compact-meter {
+    height: 7px;
+    margin: 10px 0 0;
+}
+
+.daily-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.daily-stats div {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px;
+    background: #ffffff;
+}
+
+.daily-stats span,
+.daily-stats strong {
+    display: block;
+}
+
+.daily-stats span {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 900;
+    text-transform: uppercase;
+}
+
+.daily-stats strong {
+    margin-top: 5px;
+    font-size: 24px;
+}
+
 @media (max-width: 1180px) {
     .metric-grid,
     .customer-finance-grid,
     .decision-grid,
     .analytics-grid,
-    .operations-grid {
+    .operations-grid,
+    .risk-admin-grid {
         grid-template-columns: 1fr 1fr;
     }
 
@@ -1011,8 +1177,10 @@ th {
     .customer-finance-grid,
     .analytics-grid,
     .operations-grid,
+    .risk-admin-grid,
     .application-form,
     .decision-score,
+    .applicant-summary,
     .sim-result,
     .auth-shell,
     .auth-stats,
@@ -1044,8 +1212,15 @@ th {
 
     .loan-card,
     .offer-card,
-    .notification-item {
+    .notification-item,
+    .applicant-record,
+    .candidate-card,
+    .daily-stats {
         grid-template-columns: 1fr;
+    }
+
+    .candidate-score {
+        text-align: left;
     }
 
     .topbar-actions,

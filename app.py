@@ -27,6 +27,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(BASE_DIR, "data.csv")
 MODEL_FILE = os.path.join(BASE_DIR, "models", "best_model.joblib")
 DEFAULT_LOAN_TERM_MONTHS = 36
+OPEN_REVIEW_STATUSES = {"needs_review", "pre_approved"}
+FINAL_REJECTION_STATUS = "declined"
 
 VALID_ROLES = {
     "customer": "Customer",
@@ -79,6 +81,20 @@ def days_until(value):
         return 0
     delta = target - datetime.now(timezone.utc)
     return max(0, delta.days)
+
+
+def is_today_iso(value):
+    parsed = parse_iso(value)
+    if not parsed:
+        return False
+    return parsed.astimezone(timezone.utc).date() == datetime.now(timezone.utc).date()
+
+
+def format_short_datetime(value):
+    parsed = parse_iso(value)
+    if not parsed:
+        return ""
+    return parsed.astimezone(timezone.utc).strftime("%d %b %Y")
 
 
 def row_to_dict(row):
@@ -158,14 +174,48 @@ def seed_user(conn, name, email, password, role, plan):
 
 
 def decision_status(result, risk_score):
+    result = str(result or "").strip().title()
     risk_score = float(risk_score or 0)
+    if result == "Rejected":
+        return FINAL_REJECTION_STATUS
     if result == "Approved" and risk_score <= 35:
         return "pre_approved"
     if result == "Approved":
         return "needs_review"
-    if risk_score >= 75:
-        return "declined"
-    return "needs_review"
+    return FINAL_REJECTION_STATUS
+
+
+def status_key(status):
+    value = str(status or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return value
+
+
+def normalize_prediction_status(status, result=None, risk_score=None):
+    value = status_key(status)
+    aliases = {
+        "review": "needs_review",
+        "under_review": "needs_review",
+        "in_review": "needs_review",
+        "pending": "needs_review",
+        "pending_review": "needs_review",
+        "awaiting_review": "needs_review",
+        "approved": "approved_by_officer",
+        "officer_approved": "approved_by_officer",
+        "rejected": FINAL_REJECTION_STATUS,
+        "denied": FINAL_REJECTION_STATUS,
+    }
+    value = aliases.get(value, value)
+    normalized_result = str(result or "").strip().title()
+    if normalized_result == "Rejected" and value in OPEN_REVIEW_STATUSES:
+        return FINAL_REJECTION_STATUS
+    allowed = OPEN_REVIEW_STATUSES | {"approved_by_officer", FINAL_REJECTION_STATUS, "loan_disbursed"}
+    if value in allowed:
+        return value
+    return decision_status(result or "Rejected", risk_score or 100)
+
+
+def is_review_open(item):
+    return normalize_prediction_status(item.get("status"), item.get("result"), item.get("risk_score")) in OPEN_REVIEW_STATUSES
 
 
 def import_csv_history(conn):
@@ -338,6 +388,19 @@ def init_database():
                 FOREIGN KEY (prediction_id) REFERENCES predictions(id),
                 FOREIGN KEY (loan_id) REFERENCES loan_accounts(id)
             );
+
+            CREATE TABLE IF NOT EXISTS payment_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                loan_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                balance_after REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'completed',
+                provider TEXT NOT NULL DEFAULT 'demo-card',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (loan_id) REFERENCES loan_accounts(id),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
             """
         )
 
@@ -411,20 +474,38 @@ def init_database():
             "recipient": "TEXT",
             "message": "TEXT",
             "status": "TEXT NOT NULL DEFAULT 'demo'",
-            "provider": "TEXT NOT NULL DEFAULT 'demo-log'",
+            "provider": "TEXT NOT NULL DEFAULT 'provider'",
             "created_at": "TEXT",
         }
         for column, sql in notification_columns.items():
             add_column_if_missing(conn, "notifications", column, sql)
+
+        payment_columns = {
+            "loan_id": "INTEGER",
+            "user_id": "INTEGER",
+            "amount": "REAL NOT NULL DEFAULT 0",
+            "balance_after": "REAL NOT NULL DEFAULT 0",
+            "status": "TEXT NOT NULL DEFAULT 'completed'",
+            "provider": "TEXT NOT NULL DEFAULT 'demo-card'",
+            "created_at": "TEXT",
+        }
+        for column, sql in payment_columns.items():
+            add_column_if_missing(conn, "payment_transactions", column, sql)
 
         conn.execute("UPDATE users SET password_hash = password WHERE password_hash IS NULL AND password IS NOT NULL")
         conn.execute("UPDATE users SET role = 'customer' WHERE role IS NULL OR role = ''")
         conn.execute("UPDATE users SET plan = 'Starter' WHERE plan IS NULL OR plan = ''")
         conn.execute("UPDATE users SET created_at = ? WHERE created_at IS NULL OR created_at = ''", (now_iso(),))
         conn.execute("UPDATE predictions SET status = 'needs_review' WHERE status IS NULL OR status = ''")
+        conn.execute("UPDATE predictions SET status = 'needs_review' WHERE lower(replace(replace(coalesce(status, ''), ' ', '_'), '-', '_')) IN ('review', 'under_review', 'in_review', 'pending', 'pending_review', 'awaiting_review')")
+        conn.execute("UPDATE predictions SET status = 'approved_by_officer' WHERE lower(replace(replace(coalesce(status, ''), ' ', '_'), '-', '_')) IN ('approved', 'officer_approved')")
+        conn.execute("UPDATE predictions SET status = 'declined' WHERE lower(replace(replace(coalesce(status, ''), ' ', '_'), '-', '_')) IN ('rejected', 'denied')")
+        conn.execute("UPDATE predictions SET status = 'declined' WHERE lower(trim(coalesce(result, ''))) = 'rejected' AND lower(replace(replace(coalesce(status, ''), ' ', '_'), '-', '_')) IN ('needs_review', 'pre_approved', 'review', 'under_review', 'in_review', 'pending', 'pending_review', 'awaiting_review')")
+        conn.execute("UPDATE predictions SET result = 'Approved' WHERE status IN ('approved_by_officer', 'loan_disbursed') AND result <> 'Approved'")
+        conn.execute("UPDATE predictions SET result = 'Rejected' WHERE status = 'declined' AND result <> 'Rejected'")
         conn.execute("UPDATE predictions SET created_at = ? WHERE created_at IS NULL OR created_at = ''", (now_iso(),))
 
-        seed_user(conn, "Demo Customer", "customer@credisense.ai", "Customer@123", "customer", "Starter")
+        seed_user(conn, "Customer Account", "customer@credisense.ai", "Customer@123", "customer", "Starter")
         seed_user(conn, "Bank Officer", "officer@credisense.ai", "Officer@123", "bank_officer", "Pro")
         seed_user(conn, "Risk Admin", "admin@credisense.ai", "Admin@123", "risk_admin", "Enterprise")
 
@@ -441,6 +522,8 @@ def init_database():
             CREATE INDEX IF NOT EXISTS idx_loan_accounts_user_id ON loan_accounts(user_id);
             CREATE INDEX IF NOT EXISTS idx_loan_accounts_prediction_id ON loan_accounts(prediction_id);
             CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+            CREATE INDEX IF NOT EXISTS idx_payment_transactions_loan_id ON payment_transactions(loan_id);
+            CREATE INDEX IF NOT EXISTS idx_payment_transactions_user_id ON payment_transactions(user_id);
             """
         )
 
@@ -464,6 +547,36 @@ def mask_phone(phone):
     return f"***{digits[-4:]}"
 
 
+def public_applicant_name(item):
+    applicant_name = (item.get("applicant_name") or "").strip()
+    if applicant_name.lower().startswith("demo customer"):
+        reference = item.get("prediction_id") or item.get("id") or ""
+        return f"Applicant #{reference}" if reference else "Applicant"
+    return applicant_name or "Applicant"
+
+
+def public_customer_name(item):
+    applicant_name = public_applicant_name(item)
+    owner_name = (item.get("owner_name") or "").strip()
+    owner_email = (item.get("owner_email") or "").strip().lower()
+
+    if owner_email == "customer@credisense.ai":
+        return applicant_name
+    if owner_name and owner_name.lower() not in {"demo customer", "customer account"}:
+        return owner_name
+    return applicant_name or owner_name or "Customer"
+
+
+def customer_contact_label(item):
+    email = (item.get("applicant_email") or item.get("owner_email") or "").strip()
+    if email:
+        return email
+    phone = (item.get("phone") or "").strip()
+    if phone:
+        return mask_phone(phone)
+    return ""
+
+
 def record_notification(user_id, channel, recipient, message, status, provider, prediction_id=None, loan_id=None):
     execute(
         """
@@ -476,29 +589,84 @@ def record_notification(user_id, channel, recipient, message, status, provider, 
     )
 
 
+def email_configured():
+    return bool(os.environ.get("EMAIL_SENDER") and os.environ.get("EMAIL_APP_PASSWORD"))
+
+
+def sms_configured():
+    return bool(
+        os.environ.get("TWILIO_ACCOUNT_SID")
+        and os.environ.get("TWILIO_AUTH_TOKEN")
+        and os.environ.get("TWILIO_FROM_PHONE")
+    )
+
+
+def send_email_notification(user_id, email, subject, body, prediction_id=None, loan_id=None):
+    recipient = (email or "").strip()
+    provider = "smtp"
+
+    if not recipient:
+        status = "missing_recipient"
+        record_notification(user_id, "email", "", subject, status, provider, prediction_id, loan_id)
+        return False
+
+    sender_email = os.environ.get("EMAIL_SENDER")
+    sender_password = os.environ.get("EMAIL_APP_PASSWORD")
+    smtp_host = os.environ.get("EMAIL_SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.environ.get("EMAIL_SMTP_PORT", "587"))
+
+    if not sender_email or not sender_password:
+        status = "not_configured"
+        record_notification(user_id, "email", recipient, subject, status, provider, prediction_id, loan_id)
+        return False
+
+    msg = MIMEMultipart()
+    msg["From"] = f"CrediSense AI <{sender_email}>"
+    msg["To"] = recipient
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+        status = "sent"
+    except Exception as exc:
+        status = "failed"
+        print(f"Email failed for {recipient}: {exc}")
+
+    record_notification(user_id, "email", recipient, subject, status, provider, prediction_id, loan_id)
+    return status == "sent"
+
+
 def send_sms_notification(user_id, phone, message, prediction_id=None, loan_id=None):
     recipient = (phone or "").strip()
-    provider = "demo-log"
-    status = "demo"
+    provider = "twilio"
 
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
     from_phone = os.environ.get("TWILIO_FROM_PHONE")
 
-    if recipient and account_sid and auth_token and from_phone:
-        try:
-            from twilio.rest import Client
+    if not recipient:
+        status = "missing_recipient"
+        record_notification(user_id, "sms", "", message, status, provider, prediction_id, loan_id)
+        return False
 
-            client = Client(account_sid, auth_token)
-            twilio_message = client.messages.create(body=message, from_=from_phone, to=recipient)
-            provider = "twilio"
-            status = getattr(twilio_message, "status", "sent")
-        except Exception as exc:
-            provider = "twilio"
-            status = "failed"
-            print(f"SMS failed for {mask_phone(recipient)}: {exc}")
-    else:
-        print(f"Demo SMS to {mask_phone(recipient)}: {message}")
+    if not account_sid or not auth_token or not from_phone:
+        status = "not_configured"
+        record_notification(user_id, "sms", recipient, message, status, provider, prediction_id, loan_id)
+        return False
+
+    try:
+        from twilio.rest import Client
+
+        client = Client(account_sid, auth_token)
+        twilio_message = client.messages.create(body=message, from_=from_phone, to=recipient)
+        status = getattr(twilio_message, "status", "sent")
+    except Exception as exc:
+        status = "failed"
+        print(f"SMS failed for {mask_phone(recipient)}: {exc}")
 
     record_notification(user_id, "sms", recipient, message, status, provider, prediction_id, loan_id)
     return status not in {"failed"}
@@ -772,6 +940,7 @@ def scoped_prediction_query(user):
         SELECT
             p.*,
             u.name AS owner_name,
+            u.email AS owner_email,
             reviewer.name AS reviewer_name
         FROM predictions p
         JOIN users u ON u.id = p.user_id
@@ -794,7 +963,33 @@ def clean_prediction(row):
     item["ai_score"] = float(item.get("ai_score") or 0)
     item["credit_score"] = float(item.get("credit_score") or 0)
     item["risk_label"] = risk_label(item["risk_score"])
-    item["status_label"] = (item.get("status") or "needs_review").replace("_", " ").title()
+    item["status"] = normalize_prediction_status(item.get("status"), item.get("result"), item["risk_score"])
+    item["status_label"] = item["status"].replace("_", " ").title()
+    item["status_tone"] = {
+        "approved_by_officer": "approved",
+        "loan_disbursed": "approved",
+        "pre_approved": "approved",
+        FINAL_REJECTION_STATUS: "rejected",
+    }.get(item["status"], "neutral")
+    item["applicant_label"] = public_applicant_name(item)
+    item["owner_label"] = public_customer_name(item)
+    item["owner_detail"] = customer_contact_label(item)
+    item["reviewer_name"] = item.get("reviewer_name") or ""
+    item["created_at_label"] = format_short_datetime(item.get("created_at"))
+    item["reviewed_at_label"] = format_short_datetime(item.get("reviewed_at"))
+    item["is_today"] = is_today_iso(item.get("created_at"))
+    if item.get("reviewed_by"):
+        item["review_owner_label"] = item["reviewer_name"] or "Review officer"
+    elif item.get("status") == FINAL_REJECTION_STATUS:
+        item["review_owner_label"] = "AI declined"
+    elif item.get("status") == "loan_disbursed":
+        item["review_owner_label"] = "Loan disbursed"
+    elif item.get("status") == "approved_by_officer":
+        item["review_owner_label"] = "Officer approved"
+    elif item.get("status") == "pre_approved":
+        item["review_owner_label"] = "AI pre-approval"
+    else:
+        item["review_owner_label"] = "Awaiting officer review"
     try:
         item["explain"] = json.loads(item.get("explain_json") or "[]")
     except json.JSONDecodeError:
@@ -813,9 +1008,25 @@ def clean_loan(row):
     item["balance_amount"] = float(item.get("balance_amount") or 0)
     item["monthly_payment"] = float(item.get("monthly_payment") or 0)
     item["interest_rate"] = float(item.get("interest_rate") or 0)
+    item["applicant_label"] = public_applicant_name(item)
+    item["owner_label"] = public_customer_name(item)
+    item["owner_detail"] = customer_contact_label(item)
+    item["total_paid"] = float(item.get("total_paid") or 0)
+    item["payments_made"] = int(item.get("payments_made") or 0)
+    item["payment_due_amount"] = min(item["monthly_payment"], item["balance_amount"])
     item["days_until_due"] = days_until(item.get("due_date"))
     item["status_label"] = (item.get("status") or "active").replace("_", " ").title()
-    item["payment_status_label"] = (item.get("payment_status") or "pending").replace("_", " ").title()
+    item["last_payment_at_label"] = format_short_datetime(item.get("last_payment_at") or item.get("last_payment_recorded_at"))
+    payment_status = item.get("payment_status") or "pending"
+    if item["balance_amount"] <= 0 or item.get("status") == "closed":
+        item["payment_status_label"] = "Paid Off"
+        item["payment_status_tone"] = "approved"
+    elif payment_status == "paid":
+        item["payment_status_label"] = "Paid"
+        item["payment_status_tone"] = "approved"
+    else:
+        item["payment_status_label"] = payment_status.replace("_", " ").title()
+        item["payment_status_tone"] = "neutral"
     return item
 
 
@@ -826,9 +1037,22 @@ def fetch_customer_loans(user_id):
             l.*,
             p.applicant_name,
             p.result,
-            p.status AS prediction_status
+            p.status AS prediction_status,
+            COALESCE(pay.total_paid, 0) AS total_paid,
+            COALESCE(pay.payments_made, 0) AS payments_made,
+            pay.last_payment_recorded_at
         FROM loan_accounts l
         JOIN predictions p ON p.id = l.prediction_id
+        LEFT JOIN (
+            SELECT
+                loan_id,
+                SUM(amount) AS total_paid,
+                COUNT(*) AS payments_made,
+                MAX(created_at) AS last_payment_recorded_at
+            FROM payment_transactions
+            WHERE status = 'completed'
+            GROUP BY loan_id
+        ) pay ON pay.loan_id = l.id
         WHERE l.user_id = ?
         ORDER BY l.created_at DESC, l.id DESC
         """,
@@ -852,7 +1076,7 @@ def fetch_notifications(user_id, limit=8):
 
 def loan_offer_available(prediction):
     status = prediction.get("status")
-    return prediction.get("result") == "Approved" and status in {"pre_approved", "approved_by_officer"}
+    return prediction.get("result") == "Approved" and status == "approved_by_officer"
 
 
 def customer_loan_offers(user_id):
@@ -861,7 +1085,7 @@ def customer_loan_offers(user_id):
         SELECT p.*
         FROM predictions p
         LEFT JOIN loan_accounts l ON l.prediction_id = p.id
-        WHERE p.user_id = ? AND p.result = 'Approved' AND p.status IN ('pre_approved', 'approved_by_officer') AND l.id IS NULL
+        WHERE p.user_id = ? AND p.result = 'Approved' AND p.status = 'approved_by_officer' AND l.id IS NULL
         ORDER BY p.created_at DESC, p.id DESC
         """,
         (user_id,),
@@ -869,7 +1093,187 @@ def customer_loan_offers(user_id):
     return [clean_prediction(row) for row in rows]
 
 
-def get_dashboard_payload(user):
+def build_applicant_query(args):
+    query = {
+        "name": (args.get("name") or "").strip(),
+        "email": (args.get("email") or "").strip().lower(),
+        "phone": (args.get("phone") or "").strip(),
+        "age": (args.get("age") or "").strip(),
+        "income": (args.get("income") or "").strip(),
+        "loan": (args.get("loan") or "").strip(),
+        "loan_term_months": (args.get("loan_term_months") or "").strip(),
+        "score": (args.get("score") or "").strip(),
+        "marital_status": (args.get("marital_status") or "").strip(),
+        "education": (args.get("education") or "").strip(),
+        "dependents": (args.get("dependents") or "").strip(),
+        "experience": (args.get("experience") or "").strip(),
+    }
+    query["searched"] = any(query.get(key) for key in ("name", "email", "phone"))
+    return query
+
+
+def applicant_conditions(query, prediction_alias="p", user_alias="u"):
+    conditions = []
+    params = []
+    name = query.get("name")
+    email = query.get("email")
+    phone = query.get("phone")
+
+    if email:
+        conditions.append(f"lower({prediction_alias}.applicant_email) = lower(?)")
+        params.append(email)
+    if phone:
+        conditions.append(f"{prediction_alias}.phone LIKE ?")
+        params.append(f"%{phone}%")
+    if name:
+        conditions.append(f"(lower({prediction_alias}.applicant_name) LIKE lower(?) OR lower({user_alias}.name) LIKE lower(?))")
+        params.extend((f"%{name}%", f"%{name}%"))
+
+    return conditions, params
+
+
+def fetch_applicant_history(query, limit=12):
+    if not query.get("searched"):
+        return []
+
+    conditions, params = applicant_conditions(query)
+    rows = fetch_all(
+        f"""
+        SELECT
+            p.*,
+            u.name AS owner_name,
+            u.email AS owner_email,
+            reviewer.name AS reviewer_name
+        FROM predictions p
+        JOIN users u ON u.id = p.user_id
+        LEFT JOIN users reviewer ON reviewer.id = p.reviewed_by
+        WHERE {" OR ".join(conditions)}
+        ORDER BY p.created_at DESC, p.id DESC
+        LIMIT ?
+        """,
+        tuple(params + [limit]),
+    )
+    return [clean_prediction(row) for row in rows]
+
+
+def fetch_applicant_loan_history(query, limit=8):
+    if not query.get("searched"):
+        return []
+
+    conditions, params = applicant_conditions(query)
+    rows = fetch_all(
+        f"""
+        SELECT
+            l.*,
+            p.applicant_name,
+            p.phone,
+            p.applicant_email,
+            p.result,
+            p.status AS prediction_status,
+            u.name AS owner_name,
+            u.email AS owner_email,
+            COALESCE(pay.total_paid, 0) AS total_paid,
+            COALESCE(pay.payments_made, 0) AS payments_made,
+            pay.last_payment_recorded_at
+        FROM loan_accounts l
+        JOIN predictions p ON p.id = l.prediction_id
+        JOIN users u ON u.id = l.user_id
+        LEFT JOIN (
+            SELECT
+                loan_id,
+                SUM(amount) AS total_paid,
+                COUNT(*) AS payments_made,
+                MAX(created_at) AS last_payment_recorded_at
+            FROM payment_transactions
+            WHERE status = 'completed'
+            GROUP BY loan_id
+        ) pay ON pay.loan_id = l.id
+        WHERE {" OR ".join(conditions)}
+        ORDER BY l.created_at DESC, l.id DESC
+        LIMIT ?
+        """,
+        tuple(params + [limit]),
+    )
+    return [clean_loan(row) for row in rows]
+
+
+def build_applicant_lookup(query):
+    history = fetch_applicant_history(query)
+    loans = fetch_applicant_loan_history(query)
+    total = len(history)
+    approved = sum(1 for item in history if item.get("result") == "Approved")
+    rejected = sum(1 for item in history if item.get("result") == "Rejected")
+    outstanding = round(sum(loan.get("balance_amount", 0) for loan in loans), 2)
+    total_paid = round(sum(loan.get("total_paid", 0) for loan in loans), 2)
+    total_borrowed = round(sum(loan.get("disbursed_amount", 0) for loan in loans), 2)
+
+    return {
+        "query": query,
+        "searched": bool(query.get("searched")),
+        "history": history,
+        "loans": loans,
+        "summary": {
+            "total": total,
+            "approved": approved,
+            "rejected": rejected,
+            "active_loans": sum(1 for loan in loans if loan.get("status") != "closed"),
+            "total_borrowed": total_borrowed,
+            "outstanding": outstanding,
+            "total_paid": total_paid,
+        },
+    }
+
+
+def build_risk_admin_insights(history):
+    today_candidates = [item for item in history if item.get("is_today")]
+    approved_today = [item for item in today_candidates if item.get("result") == "Approved"]
+    daily_pool = approved_today or today_candidates
+
+    top_risk_candidates = sorted(
+        history,
+        key=lambda item: (item["risk_score"], item["loan_amount"]),
+        reverse=True,
+    )[:5]
+    daily_best_candidates = sorted(
+        daily_pool,
+        key=lambda item: (item["approval_probability"], item["credit_score"], -item["risk_score"]),
+        reverse=True,
+    )[:5]
+    officer_approvals = sorted(
+        [
+            item
+            for item in history
+            if item.get("reviewed_by") and item.get("result") == "Approved"
+        ],
+        key=lambda item: item.get("reviewed_at") or item.get("created_at") or "",
+        reverse=True,
+    )[:8]
+
+    today_total = len(today_candidates)
+    today_avg_risk = (
+        round(sum(item["risk_score"] for item in today_candidates) / today_total, 2)
+        if today_total
+        else 0
+    )
+    today_approval_rate = (
+        round((len(approved_today) / today_total) * 100, 2)
+        if today_total
+        else 0
+    )
+
+    return {
+        "today_label": datetime.now(timezone.utc).strftime("%d %b %Y"),
+        "today_total": today_total,
+        "today_approved": len(approved_today),
+        "today_avg_risk": today_avg_risk,
+        "today_approval_rate": today_approval_rate,
+        "top_risk_candidates": top_risk_candidates,
+        "daily_best_candidates": daily_best_candidates,
+        "officer_approvals": officer_approvals,
+    }
+
+
+def get_dashboard_payload(user, applicant_query=None):
     query, params = scoped_prediction_query(user)
     rows = fetch_all(query, params)
     history = [clean_prediction(row) for row in rows]
@@ -877,7 +1281,7 @@ def get_dashboard_payload(user):
     total = len(history)
     approved = sum(1 for item in history if item["result"] == "Approved")
     rejected = sum(1 for item in history if item["result"] == "Rejected")
-    in_review = sum(1 for item in history if item.get("status") == "needs_review")
+    in_review = sum(1 for item in history if is_review_open(item))
     approval_rate = round((approved / total) * 100, 2) if total else 0
     avg_risk = round(sum(item["risk_score"] for item in history) / total, 2) if total else 0
     avg_ticket = round(sum(item["loan_amount"] for item in history) / total, 2) if total else 0
@@ -894,14 +1298,28 @@ def get_dashboard_payload(user):
     customer_loans = fetch_customer_loans(user["id"]) if user["role"] == "customer" else []
     notifications = fetch_notifications(user["id"]) if user["role"] == "customer" else []
     loan_offers = customer_loan_offers(user["id"]) if user["role"] == "customer" else []
+    risk_insights = build_risk_admin_insights(history) if user["role"] == "risk_admin" else {}
+    applicant_lookup = build_applicant_lookup(applicant_query or build_applicant_query({}))
+    loan_payment_summary = {
+        "active": sum(1 for loan in customer_loans if loan.get("status") != "closed"),
+        "pending": sum(
+            1
+            for loan in customer_loans
+            if loan.get("balance_amount", 0) > 0 and loan.get("payment_status") != "paid"
+        ),
+        "paid": sum(1 for loan in customer_loans if loan.get("payment_status") == "paid"),
+    }
 
     return {
         "history": history,
         "recent_history": history[:12],
-        "review_queue": [item for item in history if item.get("status") == "needs_review"][:8],
+        "review_queue": [item for item in history if is_review_open(item)][:12],
         "customer_loans": customer_loans,
+        "loan_payment_summary": loan_payment_summary,
         "loan_offers": loan_offers,
         "notifications": notifications,
+        "risk_insights": risk_insights,
+        "applicant_lookup": applicant_lookup,
         "metrics": {
             "total": total,
             "approved": approved,
@@ -1006,7 +1424,8 @@ def logout():
 @login_required
 def dashboard():
     user = current_user()
-    payload = get_dashboard_payload(user)
+    applicant_query = build_applicant_query(request.args) if user["role"] in {"bank_officer", "risk_admin"} else None
+    payload = get_dashboard_payload(user, applicant_query)
     last_prediction = session.pop("last_prediction", None)
     return render_template("index.html", **payload, last_prediction=last_prediction)
 
@@ -1092,13 +1511,34 @@ def create_prediction():
 
     log_activity(user["id"], "prediction_created", f"Application #{prediction_id} {result}")
     if result == "Approved":
-        send_approval_email(applicant_email, applicant_name, loan)
+        subject = "Loan application approved by CrediSense AI"
+        email_body = f"""
+Hello {applicant_name},
+
+Your loan application #{prediction_id} for ${loan:,.0f} has passed the CrediSense AI risk check.
+
+An officer will complete the final review before disbursement.
+
+CrediSense AI
+"""
+        send_email_notification(user["id"], applicant_email, subject, email_body, prediction_id=prediction_id)
         sms = (
             f"CrediSense AI: Your loan application #{prediction_id} is approved for ${loan:,.0f}. "
-            "Open your customer dashboard to take the loan and view payment due time."
+            "Officer review is the final step before disbursement."
         )
         send_sms_notification(user["id"], phone, sms, prediction_id=prediction_id)
     else:
+        subject = "Loan application update from CrediSense AI"
+        email_body = f"""
+Hello {applicant_name},
+
+Your loan application #{prediction_id} is currently {result}.
+
+Open your dashboard to review the risk factors and recommended next steps.
+
+CrediSense AI
+"""
+        send_email_notification(user["id"], applicant_email, subject, email_body, prediction_id=prediction_id)
         sms = (
             f"CrediSense AI: Your loan application #{prediction_id} is currently {result}. "
             "Open your dashboard to view risk factors and next steps."
@@ -1127,38 +1567,80 @@ def create_prediction():
 @role_required("bank_officer", "risk_admin")
 def review_prediction(prediction_id):
     user = current_user()
-    status = request.form.get("status", "needs_review")
+    raw_status = request.form.get("status", "needs_review")
+    status = normalize_prediction_status(raw_status)
     note = request.form.get("review_note", "").strip()
-    allowed = {"pre_approved", "needs_review", "approved_by_officer", "declined"}
-    if status not in allowed:
+    allowed = {"pre_approved", "needs_review", "approved_by_officer", FINAL_REJECTION_STATUS}
+    raw_status_key = status_key(raw_status)
+    status_aliases = {"review", "under_review", "in_review", "pending", "pending_review", "awaiting_review", "approved", "officer_approved", "rejected", "denied"}
+    if status not in allowed or raw_status_key not in allowed | status_aliases:
         flash("Invalid review status.", "error")
         return redirect(url_for("dashboard"))
 
-    execute(
-        """
-        UPDATE predictions
-        SET status = ?, review_note = ?, reviewed_by = ?, reviewed_at = ?
-        WHERE id = ?
-        """,
-        (status, note, user["id"], now_iso(), prediction_id),
-    )
-    log_activity(user["id"], "application_reviewed", f"Application #{prediction_id} set to {status}")
     prediction = fetch_one(
         """
-        SELECT user_id, applicant_name, phone, loan_amount
+        SELECT user_id, applicant_name, applicant_email, phone, loan_amount, result
         FROM predictions
         WHERE id = ?
         """,
         (prediction_id,),
     )
-    if prediction and status in {"approved_by_officer", "declined"}:
+    if not prediction:
+        flash("Application not found.", "error")
+        return redirect(url_for("dashboard"))
+
+    next_result = prediction.get("result") or "Rejected"
+    if status == "approved_by_officer":
+        next_result = "Approved"
+    elif status == FINAL_REJECTION_STATUS:
+        next_result = "Rejected"
+
+    execute(
+        """
+        UPDATE predictions
+        SET status = ?, result = ?, review_note = ?, reviewed_by = ?, reviewed_at = ?
+        WHERE id = ?
+        """,
+        (status, next_result, note, user["id"], now_iso(), prediction_id),
+    )
+    log_activity(user["id"], "application_reviewed", f"Application #{prediction_id} set to {status}")
+    if prediction and status in {"approved_by_officer", FINAL_REJECTION_STATUS}:
         if status == "approved_by_officer":
+            subject = "Your loan has been approved"
             message = (
                 f"CrediSense AI: Your loan application #{prediction_id} is officer-approved for "
                 f"${float(prediction.get('loan_amount') or 0):,.0f}. Log in to take the loan."
             )
+            email_body = f"""
+Hello {prediction.get("applicant_name") or "Applicant"},
+
+Your loan application #{prediction_id} has been approved by {user["name"]}.
+
+Approved amount: ${float(prediction.get("loan_amount") or 0):,.0f}
+
+Log in to your CrediSense AI dashboard to take the loan and view the repayment schedule.
+
+CrediSense AI
+"""
         else:
+            subject = "Your loan review is complete"
             message = f"CrediSense AI: Your loan application #{prediction_id} has been declined after review."
+            email_body = f"""
+Hello {prediction.get("applicant_name") or "Applicant"},
+
+Your loan application #{prediction_id} has been declined after officer review.
+
+Log in to your CrediSense AI dashboard to review the decision factors and next steps.
+
+CrediSense AI
+"""
+        send_email_notification(
+            prediction["user_id"],
+            prediction.get("applicant_email"),
+            subject,
+            email_body,
+            prediction_id=prediction_id,
+        )
         send_sms_notification(prediction["user_id"], prediction.get("phone"), message, prediction_id=prediction_id)
     flash(f"Application #{prediction_id} review saved.", "success")
     return redirect(url_for("dashboard"))
@@ -1241,8 +1723,27 @@ def take_loan(prediction_id):
 
     execute("UPDATE predictions SET status = ? WHERE id = ?", ("loan_disbursed", prediction_id))
     message = (
-        f"CrediSense AI: ${principal:,.0f} has been credited to your demo loan wallet. "
+        f"CrediSense AI: ${principal:,.0f} has been credited to your loan account. "
         f"First payment ${monthly_payment:,.2f} is due in 30 days."
+    )
+    email_body = f"""
+Hello {prediction.get("applicant_name") or user["name"]},
+
+Your loan #{loan_id} has been disbursed in CrediSense AI.
+
+Credited amount: ${principal:,.0f}
+First payment: ${monthly_payment:,.2f}
+Due date: {format_short_datetime(due_date)}
+
+CrediSense AI
+"""
+    send_email_notification(
+        user["id"],
+        prediction.get("applicant_email") or user["email"],
+        "Your loan has been disbursed",
+        email_body,
+        prediction_id=prediction_id,
+        loan_id=loan_id,
     )
     send_sms_notification(user["id"], prediction.get("phone"), message, prediction_id=prediction_id, loan_id=loan_id)
     log_activity(user["id"], "loan_disbursed", f"Loan #{loan_id} credited for application #{prediction_id}")
@@ -1257,10 +1758,24 @@ def fetch_loan_for_user(loan_id, user):
             p.applicant_name,
             p.phone,
             p.applicant_email,
-            u.name AS owner_name
+            u.name AS owner_name,
+            u.email AS owner_email,
+            COALESCE(pay.total_paid, 0) AS total_paid,
+            COALESCE(pay.payments_made, 0) AS payments_made,
+            pay.last_payment_recorded_at
         FROM loan_accounts l
         JOIN predictions p ON p.id = l.prediction_id
         JOIN users u ON u.id = l.user_id
+        LEFT JOIN (
+            SELECT
+                loan_id,
+                SUM(amount) AS total_paid,
+                COUNT(*) AS payments_made,
+                MAX(created_at) AS last_payment_recorded_at
+            FROM payment_transactions
+            WHERE status = 'completed'
+            GROUP BY loan_id
+        ) pay ON pay.loan_id = l.id
         WHERE l.id = ?
     """
     params = [loan_id]
@@ -1269,6 +1784,36 @@ def fetch_loan_for_user(loan_id, user):
         params.append(user["id"])
     loan = fetch_one(query, tuple(params))
     return clean_loan(loan) if loan else None
+
+
+def complete_demo_payment(loan_id, user_id, payment_amount, new_balance, next_status, next_payment_status, next_due_date):
+    paid_at = now_iso()
+    conn = get_db()
+    try:
+        conn.execute(
+            """
+            UPDATE loan_accounts
+            SET balance_amount = ?, status = ?, payment_status = ?, due_date = ?,
+                last_payment_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_balance, next_status, next_payment_status, next_due_date, paid_at, paid_at, loan_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO payment_transactions (
+                loan_id, user_id, amount, balance_after, status, provider, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (loan_id, user_id, payment_amount, new_balance, "completed", "demo-card", paid_at),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 @app.route("/payment/<int:loan_id>", methods=["GET", "POST"])
@@ -1281,25 +1826,46 @@ def fake_payment(loan_id):
         return redirect(url_for("dashboard"))
 
     if request.method == "POST":
+        if loan["balance_amount"] <= 0:
+            flash("This demo loan is already paid off.", "success")
+            return redirect(url_for("dashboard"))
+
         payment_amount = min(loan["monthly_payment"], loan["balance_amount"])
         new_balance = round(max(0, loan["balance_amount"] - payment_amount), 2)
         next_status = "closed" if new_balance <= 0 else "active"
-        next_payment_status = "paid" if next_status == "closed" else "pending"
+        next_payment_status = "paid"
         next_due_date = loan["due_date"] if next_status == "closed" else add_days_iso(30)
 
-        execute(
-            """
-            UPDATE loan_accounts
-            SET balance_amount = ?, status = ?, payment_status = ?, due_date = ?,
-                last_payment_at = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (new_balance, next_status, next_payment_status, next_due_date, now_iso(), now_iso(), loan_id),
+        complete_demo_payment(
+            loan_id,
+            loan["user_id"],
+            payment_amount,
+            new_balance,
+            next_status,
+            next_payment_status,
+            next_due_date,
         )
 
         message = (
-            f"CrediSense AI: Demo payment of ${payment_amount:,.2f} received for loan #{loan_id}. "
+            f"CrediSense AI: Payment of ${payment_amount:,.2f} received for loan #{loan_id}. "
             f"Remaining balance is ${new_balance:,.2f}."
+        )
+        email_body = f"""
+Hello {loan.get("applicant_name") or loan.get("owner_label") or "Customer"},
+
+Your payment for loan #{loan_id} has been received.
+
+Payment amount: ${payment_amount:,.2f}
+Remaining balance: ${new_balance:,.2f}
+
+CrediSense AI
+"""
+        send_email_notification(
+            loan["user_id"],
+            loan.get("applicant_email"),
+            "Loan payment received",
+            email_body,
+            loan_id=loan_id,
         )
         send_sms_notification(loan["user_id"], loan.get("phone"), message, loan_id=loan_id)
         log_activity(user["id"], "payment_completed", f"Fake payment for loan #{loan_id}")
@@ -1389,44 +1955,10 @@ def health():
             "database": database_label(),
             "model_loaded": model is not None,
             "model_file": os.path.exists(MODEL_FILE),
+            "email_configured": email_configured(),
+            "sms_configured": sms_configured(),
         }
     )
-
-
-def send_approval_email(user_email, user_name, loan_amount):
-    sender_email = os.environ.get("EMAIL_SENDER")
-    sender_password = os.environ.get("EMAIL_APP_PASSWORD")
-
-    if not sender_email or not sender_password or not user_email:
-        return False
-
-    msg = MIMEMultipart()
-    msg["From"] = f"CrediSense AI <{sender_email}>"
-    msg["To"] = user_email
-    msg["Subject"] = "Loan Pre-Approved - CrediSense AI Demo"
-
-    body = f"""
-Hello {user_name},
-
-Your loan application for {loan_amount} has been pre-approved by the CrediSense AI risk engine.
-
-This is a simulated academic demo notification.
-
-Best regards,
-CrediSense AI
-"""
-    msg.attach(MIMEText(body, "plain"))
-
-    try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(sender_email, sender_password)
-        server.send_message(msg)
-        server.quit()
-        return True
-    except Exception as exc:
-        print(f"Failed to send email: {exc}")
-        return False
 
 
 init_database()
