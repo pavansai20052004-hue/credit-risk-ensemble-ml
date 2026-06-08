@@ -4,7 +4,6 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements-deploy.txt
-    preDeployCommand: python init_db.py
     startCommand: gunicorn -c gunicorn.conf.py app:app
     healthCheckPath: /api/health
     envVars:
