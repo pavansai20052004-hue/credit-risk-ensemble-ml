@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Decision Audit Memo | {{ memo_id }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="memo-page" data-page="decision-memo" data-role="{{ current_user.role }}" data-role-label="{{ role_labels[current_user.role] }}" data-user-name="{{ current_user.name }}">
+    <main class="memo-shell">
+        <header class="memo-topbar no-print">
+            <a class="secondary-button" href="{{ url_for('dashboard') }}">
+                <i data-lucide="arrow-left"></i>
+                Dashboard
+            </a>
+            <button id="printMemo" type="button" class="primary-button">
+                <i data-lucide="printer"></i>
+                Print memo
+            </button>
+        </header>
+
+        <article class="memo-document">
+            <section class="memo-hero">
+                <div>
+                    <p class="eyebrow">Credit decision audit record</p>
+                    <h1>Decision memo {{ memo_id }}</h1>
+                    <p>{{ prediction.applicant_label }} &middot; Application #{{ prediction.id }} &middot; Generated {{ generated_at }}</p>
+                </div>
+                <div class="memo-verdict {{ 'approved' if prediction.result == 'Approved' else 'rejected' }}">
+                    <span>Decision</span>
+                    <strong>{{ prediction.result }}</strong>
+                    <small>{{ prediction.status_label }}</small>
+                </div>
+            </section>
+
+            <section class="memo-section">
+                <div class="memo-section-title">
+                    <div>
+                        <p class="eyebrow">Executive summary</p>
+                        <h2>Risk decision at a glance</h2>
+                    </div>
+                    <span class="status-chip {{ prediction.intelligence.grade_tone }}">Grade {{ prediction.intelligence.grade }}</span>
+                </div>
+                <div class="memo-metric-grid">
+                    {% for metric in decision_metrics %}
+                    <div class="memo-metric {{ metric.tone }}">
+                        <span>{{ metric.label }}</span>
+                        <strong>{{ metric.value }}</strong>
+                    </div>
+                    {% endfor %}
+                </div>
+            </section>
+
+            {% set rescue = prediction.intelligence.rescue_plan %}
+            <section class="memo-section">
+                <div class="memo-section-title">
+                    <div>
+                        <p class="eyebrow">Counterfactual intelligence</p>
+                        <h2>Approval rescue plan</h2>
+                    </div>
+                    <span class="status-chip {{ rescue.tone }}">{{ rescue.status }}</span>
+                </div>
+                <div class="memo-rescue-summary">
+                    <div>
+                        <span>Readiness score</span>
+                        <strong>{{ rescue.readiness_score }}/100</strong>
+                        <small>{{ rescue.summary }}</small>
+                    </div>
+                    <div>
+                        <span>Target offer</span>
+                        <strong>${{ "{:,.0f}".format(rescue.target_loan) }}</strong>
+                        <small>{{ rescue.target_score }} score &middot; {{ rescue.target_term }} months &middot; {{ rescue.target_payment_to_income }}% payment load</small>
+                    </div>
+                    <div>
+                        <span>Counterfactual shift</span>
+                        <strong>{{ "{:+.1f}".format(rescue.approval_lift) }} approval pts</strong>
+                        <small>{{ "{:+.1f}".format(0 - rescue.risk_reduction) }} risk points versus current request</small>
+                    </div>
+                </div>
+                <div class="memo-rescue-steps">
+                    {% for step in rescue.steps %}
+                    <article class="{{ step.tone }}">
+                        <i data-lucide="{{ step.icon }}"></i>
+                        <div>
+                            <strong>{{ step.label }}: {{ step.current }} &rarr; {{ step.target }}</strong>
+                            <small>{{ step.detail }}</small>
+                        </div>
+                    </article>
+                    {% endfor %}
+                </div>
+            </section>
+
+            <section class="memo-two-column">
+                <section class="memo-section">
+                    <div class="memo-section-title">
+                        <div>
+                            <p class="eyebrow">Applicant file</p>
+                            <h2>Profile details</h2>
+                        </div>
+                    </div>
+                    <div class="memo-fact-list">
+                        {% for fact in applicant_profile %}
+                        <div>
+                            <span>{{ fact.label }}</span>
+                            <strong>{{ fact.value }}</strong>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="memo-section">
+                    <div class="memo-section-title">
+                        <div>
+                            <p class="eyebrow">Loan economics</p>
+                            <h2>Affordability snapshot</h2>
+                        </div>
+                    </div>
+                    <div class="memo-fact-list">
+                        {% for fact in loan_terms %}
+                        <div>
+                            <span>{{ fact.label }}</span>
+                            <strong>{{ fact.value }}</strong>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </section>
+            </section>
+
+            <section class="memo-section">
+                <div class="memo-section-title">
+                    <div>
+                        <p class="eyebrow">Governance snapshot</p>
+                        <h2>Controls attached to this decision</h2>
+                    </div>
+                    <span class="status-chip {{ governance.tone }}">{{ governance.stage }}</span>
+                </div>
+                <div class="memo-metric-grid governance">
+                    {% for item in governance_snapshot %}
+                    <div class="memo-metric {{ item.tone }}">
+                        <span>{{ item.label }}</span>
+                        <strong>{{ item.value }}</strong>
+                    </div>
+                    {% endfor %}
+                </div>
+            </section>
+
+            <section class="memo-two-column">
+                <section class="memo-section">
+                    <div class="memo-section-title">
+                        <div>
+                            <p class="eyebrow">Model explanations</p>
+                            <h2>Top decision factors</h2>
+                        </div>
+                    </div>
+                    <div class="memo-factor-list">
+                        {% for factor in prediction.explain %}
+                        <div>
+                            <span>{{ factor.feature }}</span>
+                            <div class="memo-factor-track">
+                                <span style="width: {{ factor.impact if factor.impact > 0 else -factor.impact }}%"></span>
+                            </div>
+                            <strong>{{ '+' if factor.impact > 0 else '' }}{{ factor.impact }}%</strong>
+                        </div>
+                        {% else %}
+                        <p class="memo-muted">No stored explanation factors were available for this score.</p>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="memo-section">
+                    <div class="memo-section-title">
+                        <div>
+                            <p class="eyebrow">Policy controls</p>
+                            <h2>Underwriting flags</h2>
+                        </div>
+                    </div>
+                    <div class="memo-flag-list">
+                        {% for flag in prediction.intelligence.policy_flags %}
+                        <article class="memo-flag {{ flag.tone }}">
+                            <i data-lucide="{{ flag.icon }}"></i>
+                            <div>
+                                <strong>{{ flag.label }}</strong>
+                                <small>{{ flag.detail }}</small>
+                            </div>
+                        </article>
+                        {% endfor %}
+                    </div>
+                </section>
+            </section>
+
+            <section class="memo-two-column">
+                <section class="memo-section">
+                    <div class="memo-section-title">
+                        <div>
+                            <p class="eyebrow">Adverse action support</p>
+                            <h2>Improvement guidance</h2>
+                        </div>
+                    </div>
+                    <ul class="memo-list">
+                        {% for suggestion in prediction.suggestions %}
+                        <li>{{ suggestion }}</li>
+                        {% else %}
+                        <li>Maintain standard verification and repayment monitoring.</li>
+                        {% endfor %}
+                    </ul>
+                </section>
+
+                <section class="memo-section">
+                    <div class="memo-section-title">
+                        <div>
+                            <p class="eyebrow">Risk safeguards</p>
+                            <h2>Recommended controls</h2>
+                        </div>
+                    </div>
+                    <ul class="memo-list">
+                        {% for safeguard in prediction.intelligence.safeguards %}
+                        <li>{{ safeguard }}</li>
+                        {% endfor %}
+                    </ul>
+                </section>
+            </section>
+
+            <section class="memo-section">
+                <div class="memo-section-title">
+                    <div>
+                        <p class="eyebrow">Audit trail</p>
+                        <h2>Decision lifecycle</h2>
+                    </div>
+                    <span class="pill">{{ prediction.model_source }}</span>
+                </div>
+                <div class="memo-timeline">
+                    {% for event in audit_events %}
+                    <article>
+                        <span>{{ event.label }}</span>
+                        <strong>{{ event.value }}</strong>
+                        <small>{{ event.detail }}</small>
+                    </article>
+                    {% endfor %}
+                </div>
+                {% if prediction.review_note %}
+                <div class="memo-note">
+                    <span>Officer note</span>
+                    <p>{{ prediction.review_note }}</p>
+                </div>
+                {% endif %}
+            </section>
+
+            <footer class="memo-disclaimer">
+                <strong>Academic prototype notice</strong>
+                <p>This memo is generated for demonstration and portfolio review. Real lending use requires verified bank data, legal review, fairness validation, privacy controls, production security, and regulatory approval.</p>
+            </footer>
+        </article>
+    </main>
+
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -9,3 +9,8 @@ app.db
 data.csv
 users.csv
 *.log
+.codex_tmp/
+.vercel/
+artifacts/
+
+.vercel

@@ -1,14 +1,15 @@
 import json
+import math
 import os
+import secrets
 import smtplib
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from functools import wraps
 
-import joblib
-import pandas as pd
 from flask import (
+    abort,
     Flask,
     flash,
     jsonify,
@@ -56,6 +57,29 @@ PLAN_LIMITS = {
     "Enterprise": 1000,
 }
 
+GOVERNANCE_FEATURES = [
+    {
+        "key": "credit_score",
+        "label": "Credit score",
+        "bins": [0, 600, 660, 720, 780, 1000],
+    },
+    {
+        "key": "income",
+        "label": "Income",
+        "bins": [0, 25000, 50000, 75000, 100000, 1000000000],
+    },
+    {
+        "key": "loan_amount",
+        "label": "Loan amount",
+        "bins": [0, 10000, 25000, 50000, 100000, 1000000000],
+    },
+    {
+        "key": "risk_score",
+        "label": "Default risk",
+        "bins": [0, 20, 40, 60, 80, 101],
+    },
+]
+
 EDUCATION_MODEL_MAP = {
     "graduate": "bachelor",
     "non-graduate": "high_school",
@@ -78,15 +102,53 @@ _model_loaded = False
 _credit_model = None
 
 
+def get_csrf_token():
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+@app.before_request
+def enforce_csrf_protection():
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return None
+
+    expected_token = session.get("_csrf_token")
+    supplied_token = (
+        request.form.get("_csrf_token")
+        or request.headers.get("X-CSRFToken")
+        or request.headers.get("X-CSRF-Token")
+    )
+    if not expected_token or not supplied_token or not secrets.compare_digest(expected_token, supplied_token):
+        abort(400, description="Invalid or missing CSRF token.")
+    return None
+
+
 @app.after_request
 def add_security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'self'",
+    )
+    response.headers.setdefault(
         "Permissions-Policy",
         "camera=(), geolocation=(), payment=(), usb=()",
     )
+    if app.config["SESSION_COOKIE_SECURE"]:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
 
 
@@ -262,7 +324,12 @@ def import_csv_history(conn):
     fallback_user_id = demo_user["id"] if demo_user else 1
 
     try:
+        import pandas as pd
+
         df = pd.read_csv(DATA_FILE)
+    except ImportError:
+        print("pandas is not installed. Skipping optional CSV history import.")
+        return
     except Exception:
         return
 
@@ -720,6 +787,8 @@ def load_credit_model():
         return None
 
     try:
+        import joblib
+
         _credit_model = joblib.load(MODEL_FILE)
     except Exception as exc:
         print(f"Could not load model: {exc}")
@@ -758,6 +827,12 @@ def calculate_rule_score(score, income, loan, experience):
 def predict_credit_risk(age, income, loan, score, marital_status, education, dependents, experience, loan_term_months):
     model = load_credit_model()
     if model is None:
+        return calculate_rule_score(score, income, loan, experience)
+
+    try:
+        import pandas as pd
+    except ImportError:
+        print("pandas is not installed. Falling back to policy scoring.")
         return calculate_rule_score(score, income, loan, experience)
 
     model_input = pd.DataFrame(
@@ -884,6 +959,538 @@ def calculate_ai_score(score, income, loan, experience):
     )
 
 
+def clamp(value, lower, upper):
+    return max(lower, min(upper, value))
+
+
+def calculate_monthly_payment(principal, annual_rate, months):
+    principal = float(principal or 0)
+    months = int(months or DEFAULT_LOAN_TERM_MONTHS)
+    if principal <= 0 or months <= 0:
+        return 0
+
+    monthly_rate = float(annual_rate or 0) / 100 / 12
+    if monthly_rate <= 0:
+        return round(principal / months, 2)
+
+    payment = principal * monthly_rate * (1 + monthly_rate) ** months
+    payment /= (1 + monthly_rate) ** months - 1
+    return round(payment, 2)
+
+
+def build_policy_flags(score, income, loan, experience, loan_term_months, risk_score, payment_to_income):
+    loan_to_income = loan / max(income, 1)
+    flags = []
+
+    if score < 620:
+        flags.append(
+            {
+                "label": "Credit floor breach",
+                "detail": "Credit score is below the safer underwriting band.",
+                "tone": "rejected",
+                "icon": "triangle-alert",
+            }
+        )
+    elif score < 680:
+        flags.append(
+            {
+                "label": "Thin credit buffer",
+                "detail": "Credit score is acceptable but has limited room for adverse movement.",
+                "tone": "neutral",
+                "icon": "circle-alert",
+            }
+        )
+
+    if loan_to_income > 1.1:
+        flags.append(
+            {
+                "label": "High exposure request",
+                "detail": "Requested loan is above annual income and needs senior review.",
+                "tone": "rejected",
+                "icon": "scale",
+            }
+        )
+    elif loan_to_income > 0.65:
+        flags.append(
+            {
+                "label": "Elevated loan-to-income",
+                "detail": "Requested exposure is high relative to declared annual income.",
+                "tone": "neutral",
+                "icon": "scale",
+            }
+        )
+
+    if payment_to_income > 40:
+        flags.append(
+            {
+                "label": "Affordability stress",
+                "detail": "Estimated monthly payment consumes more than 40% of monthly income.",
+                "tone": "rejected",
+                "icon": "badge-dollar-sign",
+            }
+        )
+    elif payment_to_income > 28:
+        flags.append(
+            {
+                "label": "Affordability watch",
+                "detail": "Payment load should be verified against existing obligations.",
+                "tone": "neutral",
+                "icon": "badge-dollar-sign",
+            }
+        )
+
+    if experience < 2:
+        flags.append(
+            {
+                "label": "Employment seasoning",
+                "detail": "Employment history is below the preferred two-year stability window.",
+                "tone": "neutral",
+                "icon": "briefcase-business",
+            }
+        )
+
+    if loan_term_months > 72:
+        flags.append(
+            {
+                "label": "Long-tenor sensitivity",
+                "detail": "Long repayment term increases exposure to income or rate shocks.",
+                "tone": "neutral",
+                "icon": "calendar-clock",
+            }
+        )
+
+    if risk_score >= 65:
+        flags.append(
+            {
+                "label": "Default-risk escalation",
+                "detail": "Modelled default risk exceeds the senior review threshold.",
+                "tone": "rejected",
+                "icon": "shield-alert",
+            }
+        )
+
+    if not flags:
+        flags.append(
+            {
+                "label": "Policy clear",
+                "detail": "Profile clears core credit, exposure, affordability, and stability checks.",
+                "tone": "approved",
+                "icon": "shield-check",
+            }
+        )
+
+    return flags
+
+
+def decision_grade(risk_score, approval_probability, payment_to_income):
+    if risk_score <= 20 and approval_probability >= 78 and payment_to_income <= 22:
+        return "A"
+    if risk_score <= 35 and approval_probability >= 65 and payment_to_income <= 28:
+        return "B"
+    if risk_score <= 55 and approval_probability >= 45 and payment_to_income <= 36:
+        return "C"
+    if risk_score <= 72 and payment_to_income <= 44:
+        return "D"
+    return "E"
+
+
+def grade_tone(grade):
+    if grade in {"A", "B"}:
+        return "approved"
+    if grade == "C":
+        return "warning"
+    return "rejected"
+
+
+def estimate_risk_apr(score, risk_score):
+    score = float(score or 0)
+    risk_score = float(risk_score or 0)
+    return clamp(
+        7.4 + risk_score * 0.16 + max(0, 680 - score) * 0.015 - max(0, score - 740) * 0.01,
+        6.5,
+        29.9,
+    )
+
+
+def format_money(value):
+    return f"${float(value or 0):,.0f}"
+
+
+def counterfactual_scenario(label, score, income, loan, experience, loan_term_months):
+    score = float(score or 0)
+    income = float(income or 0)
+    loan = float(loan or 0)
+    experience = float(experience or 0)
+    loan_term_months = int(loan_term_months or DEFAULT_LOAN_TERM_MONTHS)
+    prediction = predict_credit_risk(
+        age=30,
+        income=income,
+        loan=loan,
+        score=score,
+        marital_status="single",
+        education="bachelor",
+        dependents=0,
+        experience=experience,
+        loan_term_months=loan_term_months,
+    )
+    approval_probability = round(float(prediction["approval_probability"]), 2)
+    risk_score = round(float(prediction["risk_score"]), 2)
+    apr = estimate_risk_apr(score, risk_score)
+    monthly_payment = calculate_monthly_payment(loan, apr, loan_term_months)
+    payment_to_income = round((monthly_payment / max(income / 12, 1)) * 100, 1)
+    grade = decision_grade(risk_score, approval_probability, payment_to_income)
+
+    return {
+        "label": label,
+        "result": prediction["result"],
+        "approval_probability": approval_probability,
+        "risk_score": risk_score,
+        "risk_label": risk_label(risk_score),
+        "grade": grade,
+        "grade_tone": grade_tone(grade),
+        "score": int(round(score)),
+        "income": round(income, 2),
+        "loan_amount": round(loan, 2),
+        "loan_term_months": loan_term_months,
+        "experience": round(experience, 1),
+        "estimated_apr": round(apr, 2),
+        "monthly_payment": monthly_payment,
+        "payment_to_income": payment_to_income,
+    }
+
+
+def build_approval_rescue_plan(
+    score,
+    income,
+    loan,
+    experience,
+    loan_term_months,
+    approval_probability,
+    risk_score,
+    result,
+    payment_to_income,
+):
+    score = float(score or 0)
+    income = float(income or 0)
+    loan = float(loan or 0)
+    experience = float(experience or 0)
+    loan_term_months = int(loan_term_months or DEFAULT_LOAN_TERM_MONTHS)
+    approval_probability = float(approval_probability or 0)
+    risk_score = float(risk_score or 0)
+    payment_to_income = float(payment_to_income or 0)
+
+    if risk_score >= 65 or score < 620:
+        target_ratio = 0.35
+        target_score = max(score, 680)
+    elif risk_score >= 55:
+        target_ratio = 0.45
+        target_score = max(score, 700)
+    elif risk_score >= 35:
+        target_ratio = 0.55
+        target_score = max(score, 700 if score < 680 else score)
+    else:
+        target_ratio = 0.7
+        target_score = max(score, 700 if score < 650 else score)
+
+    target_loan = loan
+    if income > 0 and loan > 0:
+        target_loan = min(loan, round((income * target_ratio) / 500) * 500)
+        target_loan = max(1000, target_loan) if loan >= 1000 else target_loan
+
+    target_term = loan_term_months
+    if payment_to_income > 36 and loan_term_months < 60:
+        target_term = min(60, max(48, loan_term_months + 12))
+    elif payment_to_income > 28 and loan_term_months < 48:
+        target_term = 48
+
+    target_experience = max(experience, 2) if experience < 2 else experience
+    candidate_profiles = [
+        (target_score, target_loan, target_term, target_experience),
+        (max(target_score, 720), min(target_loan, round(income * 0.4 / 500) * 500) if income else target_loan, min(max(target_term, 48), 60), target_experience),
+        (max(target_score, 740), min(target_loan, round(income * 0.3 / 500) * 500) if income else target_loan, min(max(target_term, 48), 60), target_experience),
+    ]
+
+    best_path = None
+    for candidate_score, candidate_loan, candidate_term, candidate_experience in candidate_profiles:
+        scenario = counterfactual_scenario(
+            "Rescue path",
+            candidate_score,
+            income,
+            max(0, candidate_loan),
+            candidate_experience,
+            candidate_term,
+        )
+        if (
+            scenario["result"] == "Approved"
+            and scenario["risk_score"] <= 55
+            and scenario["payment_to_income"] <= 36
+        ):
+            best_path = scenario
+            break
+        if not best_path or (
+            scenario["approval_probability"],
+            -scenario["risk_score"],
+            -scenario["payment_to_income"],
+        ) > (
+            best_path["approval_probability"],
+            -best_path["risk_score"],
+            -best_path["payment_to_income"],
+        ):
+            best_path = scenario
+
+    current = {
+        "label": "Current request",
+        "result": result,
+        "approval_probability": round(approval_probability, 2),
+        "risk_score": round(risk_score, 2),
+        "risk_label": risk_label(risk_score),
+        "grade": decision_grade(risk_score, approval_probability, payment_to_income),
+        "grade_tone": grade_tone(decision_grade(risk_score, approval_probability, payment_to_income)),
+        "score": int(round(score)),
+        "income": round(income, 2),
+        "loan_amount": round(loan, 2),
+        "loan_term_months": loan_term_months,
+        "experience": round(experience, 1),
+        "payment_to_income": round(payment_to_income, 1),
+    }
+    conservative_loan = min(
+        best_path["loan_amount"],
+        round((income * 0.25) / 500) * 500 if income else best_path["loan_amount"],
+    )
+    conservative = counterfactual_scenario(
+        "Low-stress offer",
+        max(best_path["score"], 720),
+        income,
+        max(0, conservative_loan),
+        best_path["experience"],
+        min(max(best_path["loan_term_months"], 36), 60),
+    )
+
+    approval_lift = round(best_path["approval_probability"] - approval_probability, 2)
+    risk_reduction = round(risk_score - best_path["risk_score"], 2)
+    readiness_score = int(
+        round(
+            clamp(
+                best_path["approval_probability"] * 0.55
+                + (100 - best_path["risk_score"]) * 0.35
+                + min(best_path["score"] / 900 * 10, 10),
+                0,
+                100,
+            )
+        )
+    )
+
+    steps = []
+    score_delta = max(0, best_path["score"] - score)
+    if score_delta:
+        steps.append(
+            {
+                "label": "Credit lift",
+                "current": str(int(round(score))),
+                "target": str(best_path["score"]),
+                "detail": f"Raise the score by about {int(round(score_delta))} points before requesting a larger limit.",
+                "tone": "warning" if score_delta <= 50 else "rejected",
+                "icon": "trending-up",
+            }
+        )
+
+    loan_delta = max(0, loan - best_path["loan_amount"])
+    if loan_delta:
+        steps.append(
+            {
+                "label": "Resize request",
+                "current": format_money(loan),
+                "target": format_money(best_path["loan_amount"]),
+                "detail": f"Cut exposure by {format_money(loan_delta)} to move closer to policy appetite.",
+                "tone": "warning",
+                "icon": "scissors",
+            }
+        )
+
+    if best_path["loan_term_months"] != loan_term_months:
+        steps.append(
+            {
+                "label": "Payment design",
+                "current": f"{loan_term_months} mo",
+                "target": f"{best_path['loan_term_months']} mo",
+                "detail": "Use a term that keeps payment load inside the affordable band without creating excessive tenor risk.",
+                "tone": "neutral",
+                "icon": "calendar-clock",
+            }
+        )
+
+    if experience < 2:
+        steps.append(
+            {
+                "label": "Stability proof",
+                "current": f"{round(experience, 1)} yr",
+                "target": "2 yrs",
+                "detail": "Add employer verification, a co-applicant, or income continuity evidence.",
+                "tone": "neutral",
+                "icon": "briefcase-business",
+            }
+        )
+
+    steps.append(
+        {
+            "label": "Verification pack",
+            "current": "Basic KYC",
+            "target": "Income, bank, obligations",
+            "detail": "Attach bank statements, income proof, and existing debt obligations to reduce manual review friction.",
+            "tone": "approved" if best_path["result"] == "Approved" else "neutral",
+            "icon": "folder-check",
+        }
+    )
+
+    blockers = []
+    if score < 680:
+        blockers.append("Credit score below prime band")
+    if income and loan > income * target_ratio:
+        blockers.append("Requested exposure above rescue appetite")
+    if payment_to_income > 28:
+        blockers.append("Monthly payment pressure")
+    if risk_score >= 55:
+        blockers.append("Default-risk escalation")
+    if experience < 2:
+        blockers.append("Short employment history")
+    if not blockers:
+        blockers.append("Maintain verification discipline")
+
+    if result == "Approved" and risk_score <= 35:
+        status = "Protection plan"
+        tone = "approved"
+        summary = "This file is already in a strong band. The plan protects pricing and keeps the offer audit-ready."
+    elif best_path["result"] == "Approved":
+        status = "Rescue path found"
+        tone = "warning" if risk_score >= 35 else "approved"
+        summary = "A policy-fit path is available by adjusting the riskiest levers before final review."
+    else:
+        status = "Manual recovery needed"
+        tone = "rejected"
+        summary = "The profile remains outside automated appetite even after mitigation, so a human exception review is required."
+
+    return {
+        "status": status,
+        "tone": tone,
+        "summary": summary,
+        "readiness_score": readiness_score,
+        "approval_lift": approval_lift,
+        "risk_reduction": risk_reduction,
+        "target_score": best_path["score"],
+        "target_loan": best_path["loan_amount"],
+        "target_term": best_path["loan_term_months"],
+        "target_payment_to_income": best_path["payment_to_income"],
+        "steps": steps[:5],
+        "blockers": blockers[:4],
+        "scenarios": [current, best_path, conservative],
+    }
+
+
+def build_decision_intelligence(
+    score,
+    income,
+    loan,
+    experience,
+    loan_term_months,
+    approval_probability,
+    risk_score,
+    result,
+    include_rescue_plan=True,
+):
+    income = float(income or 0)
+    loan = float(loan or 0)
+    score = float(score or 0)
+    experience = float(experience or 0)
+    loan_term_months = int(loan_term_months or DEFAULT_LOAN_TERM_MONTHS)
+    approval_probability = float(approval_probability or 0)
+    risk_score = float(risk_score or 0)
+
+    loan_to_income = loan / max(income, 1)
+    estimated_apr = estimate_risk_apr(score, risk_score)
+    monthly_payment = calculate_monthly_payment(loan, estimated_apr, loan_term_months)
+    payment_to_income = (monthly_payment / max(income / 12, 1)) * 100
+    loss_given_default = clamp(40 + max(0, loan_to_income - 0.55) * 18 + (8 if score < 640 else 0), 35, 68)
+    expected_loss = loan * (risk_score / 100) * (loss_given_default / 100)
+
+    safe_lti = 0.85 if risk_score < 25 else 0.65 if risk_score < 45 else 0.45 if risk_score < 60 else 0.25
+    if score < 620:
+        safe_lti -= 0.1
+    if experience < 2:
+        safe_lti -= 0.05
+    safe_lti = clamp(safe_lti, 0.15, 0.9)
+    recommended_limit = round(max(0, income * safe_lti) / 500) * 500 if income else 0
+    recommended_amount = min(loan, recommended_limit) if recommended_limit else 0
+
+    grade = decision_grade(risk_score, approval_probability, payment_to_income)
+    if result == "Rejected":
+        action = "Decline until mitigation is documented"
+        action_tone = "rejected"
+        review_sla = "Reapply after improvement"
+    elif risk_score <= 30 and payment_to_income <= 25:
+        action = "Fast-track with standard verification"
+        action_tone = "approved"
+        review_sla = "Same day"
+    elif risk_score <= 55 and payment_to_income <= 35:
+        action = "Officer review with income verification"
+        action_tone = "neutral"
+        review_sla = "24 hours"
+    else:
+        action = "Senior review before any offer"
+        action_tone = "warning"
+        review_sla = "48 hours"
+
+    safeguards = []
+    if recommended_limit and loan > recommended_limit:
+        safeguards.append(f"Reprice or resize offer near ${recommended_limit:,.0f}.")
+    if payment_to_income > 28:
+        safeguards.append("Verify bank statements and existing monthly obligations.")
+    if risk_score >= 55:
+        safeguards.append("Request collateral, guarantor support, or a smaller exposure.")
+    if score < 680:
+        safeguards.append("Document credit-score improvement path before increasing limits.")
+    if not safeguards:
+        safeguards.append("Maintain automated audit trail and standard KYC verification.")
+
+    intelligence = {
+        "grade": grade,
+        "grade_tone": grade_tone(grade),
+        "loan_to_income": round(loan_to_income * 100, 1),
+        "payment_to_income": round(payment_to_income, 1),
+        "estimated_apr": round(estimated_apr, 2),
+        "monthly_payment": monthly_payment,
+        "loss_given_default": round(loss_given_default, 1),
+        "expected_loss": round(expected_loss, 2),
+        "recommended_limit": recommended_limit,
+        "recommended_amount": round(recommended_amount, 2),
+        "action": action,
+        "action_tone": action_tone,
+        "review_sla": review_sla,
+        "policy_flags": build_policy_flags(
+            score,
+            income,
+            loan,
+            experience,
+            loan_term_months,
+            risk_score,
+            payment_to_income,
+        ),
+        "safeguards": safeguards[:4],
+    }
+    if include_rescue_plan:
+        intelligence["rescue_plan"] = build_approval_rescue_plan(
+            score,
+            income,
+            loan,
+            experience,
+            loan_term_months,
+            approval_probability,
+            risk_score,
+            result,
+            payment_to_income,
+        )
+    return intelligence
+
+
 def build_auto_explanation(result, score, income, loan, approval_probability, risk_score):
     if result == "Approved":
         return (
@@ -984,6 +1591,7 @@ def inject_globals():
         "current_user": user,
         "role_labels": VALID_ROLES,
         "plan_limits": PLAN_LIMITS,
+        "csrf_token": get_csrf_token,
     }
 
 
@@ -1008,12 +1616,16 @@ def scoped_prediction_query(user):
 
 def clean_prediction(row):
     item = dict(row)
+    item["age"] = int(item.get("age") or 0)
     item["income"] = float(item.get("income") or 0)
     item["loan_amount"] = float(item.get("loan_amount") or 0)
+    item["loan_term_months"] = int(item.get("loan_term_months") or DEFAULT_LOAN_TERM_MONTHS)
     item["risk_score"] = float(item.get("risk_score") or 0)
     item["approval_probability"] = float(item.get("approval_probability") or 0)
     item["ai_score"] = float(item.get("ai_score") or 0)
     item["credit_score"] = float(item.get("credit_score") or 0)
+    item["employment_years"] = int(item.get("employment_years") or 0)
+    item["dependents"] = int(item.get("dependents") or 0)
     item["risk_label"] = risk_label(item["risk_score"])
     item["status"] = normalize_prediction_status(item.get("status"), item.get("result"), item["risk_score"])
     item["status_label"] = prediction_status_label(item["status"])
@@ -1045,6 +1657,17 @@ def clean_prediction(row):
         item["suggestions"] = json.loads(item.get("suggestions_json") or "[]")
     except json.JSONDecodeError:
         item["suggestions"] = []
+    item["intelligence"] = build_decision_intelligence(
+        item["credit_score"],
+        item["income"],
+        item["loan_amount"],
+        item["employment_years"],
+        item["loan_term_months"],
+        item["approval_probability"],
+        item["risk_score"],
+        item.get("result"),
+        include_rescue_plan=False,
+    )
     return item
 
 
@@ -1207,6 +1830,513 @@ def build_assurance_checks(review_queue):
             "icon": "send",
         },
     ]
+
+
+def percentage(part, total):
+    return round((float(part or 0) / total) * 100, 2) if total else 0
+
+
+def rate_tone(rate, warning_threshold, alert_threshold):
+    rate = float(rate or 0)
+    if rate >= alert_threshold:
+        return "rejected"
+    if rate >= warning_threshold:
+        return "warning"
+    return "approved"
+
+
+def coverage_tone(coverage, warning_threshold, alert_threshold):
+    coverage = float(coverage or 0)
+    if coverage <= alert_threshold:
+        return "rejected"
+    if coverage <= warning_threshold:
+        return "warning"
+    return "approved"
+
+
+def split_monitoring_windows(history):
+    total = len(history)
+    if total < 8:
+        return [], history
+
+    recent_count = min(30, max(4, total // 3))
+    if total - recent_count < 5:
+        recent_count = max(3, total - 5)
+
+    return history[recent_count:], history[:recent_count]
+
+
+def bucket_index(value, bins):
+    value = float(value or 0)
+    for index in range(len(bins) - 1):
+        upper = bins[index + 1]
+        if value < upper or index == len(bins) - 2:
+            return index
+    return len(bins) - 2
+
+
+def population_stability_index(reference, current, feature):
+    minimum_ready = len(reference) >= 5 and len(current) >= 3
+    if not minimum_ready:
+        return {
+            "label": feature["label"],
+            "value": "Insufficient",
+            "psi": 0,
+            "status": "Building baseline",
+            "tone": "neutral",
+            "detail": "More scored applications are needed before drift can be measured.",
+        }
+
+    bins = feature["bins"]
+    reference_counts = [0 for _ in range(len(bins) - 1)]
+    current_counts = [0 for _ in range(len(bins) - 1)]
+
+    for item in reference:
+        reference_counts[bucket_index(item.get(feature["key"]), bins)] += 1
+    for item in current:
+        current_counts[bucket_index(item.get(feature["key"]), bins)] += 1
+
+    psi = 0
+    for reference_count, current_count in zip(reference_counts, current_counts):
+        reference_share = max(reference_count / len(reference), 0.005)
+        current_share = max(current_count / len(current), 0.005)
+        psi += (current_share - reference_share) * math.log(current_share / reference_share)
+
+    psi = round(max(0, psi), 3)
+    if psi >= 0.25:
+        status = "Distribution shift"
+        tone = "rejected"
+        detail = "Recent applications have moved materially away from the baseline sample."
+    elif psi >= 0.1:
+        status = "Watch"
+        tone = "warning"
+        detail = "Recent applications show moderate drift and should be reviewed."
+    else:
+        status = "Stable"
+        tone = "approved"
+        detail = "Recent applications are aligned with the baseline distribution."
+
+    return {
+        "label": feature["label"],
+        "value": f"{psi:.3f}",
+        "psi": psi,
+        "status": status,
+        "tone": tone,
+        "detail": detail,
+    }
+
+
+def build_drift_monitor(history):
+    reference, current = split_monitoring_windows(history)
+    metrics = [population_stability_index(reference, current, feature) for feature in GOVERNANCE_FEATURES]
+    alert_count = sum(1 for metric in metrics if metric["tone"] == "rejected")
+    watch_count = sum(1 for metric in metrics if metric["tone"] == "warning")
+    max_psi = max((metric["psi"] for metric in metrics), default=0)
+
+    if not reference or len(current) < 3:
+        status = "Baseline pending"
+        tone = "neutral"
+    elif alert_count:
+        status = "Drift alert"
+        tone = "rejected"
+    elif watch_count:
+        status = "Watch"
+        tone = "warning"
+    else:
+        status = "Stable"
+        tone = "approved"
+
+    return {
+        "status": status,
+        "tone": tone,
+        "max_psi": round(max_psi, 3),
+        "alert_count": alert_count,
+        "watch_count": watch_count,
+        "baseline_count": len(reference),
+        "recent_count": len(current),
+        "metrics": metrics,
+    }
+
+
+def age_band(item):
+    age = int(item.get("age") or 0)
+    if age < 30:
+        return "18-29"
+    if age < 45:
+        return "30-44"
+    if age < 60:
+        return "45-59"
+    return "60+"
+
+
+def title_value(value):
+    return str(value or "Unknown").replace("_", " ").strip().title() or "Unknown"
+
+
+def build_group_dimension(history, label, group_func):
+    groups = {}
+    for item in history:
+        group = group_func(item)
+        groups.setdefault(group, {"total": 0, "approved": 0, "risk_total": 0})
+        groups[group]["total"] += 1
+        groups[group]["approved"] += 1 if item.get("result") == "Approved" else 0
+        groups[group]["risk_total"] += float(item.get("risk_score") or 0)
+
+    qualified = {
+        group: {
+            "total": values["total"],
+            "approval_rate": percentage(values["approved"], values["total"]),
+            "avg_risk": round(values["risk_total"] / values["total"], 2),
+        }
+        for group, values in groups.items()
+        if values["total"] >= 2
+    }
+
+    if len(qualified) < 2:
+        return {
+            "label": label,
+            "value": "Insufficient",
+            "approval_gap": 0,
+            "risk_gap": 0,
+            "status": "Building sample",
+            "tone": "neutral",
+            "detail": "At least two populated groups are needed for this monitor.",
+        }
+
+    highest = max(qualified.items(), key=lambda pair: pair[1]["approval_rate"])
+    lowest = min(qualified.items(), key=lambda pair: pair[1]["approval_rate"])
+    high_risk = max(qualified.items(), key=lambda pair: pair[1]["avg_risk"])
+    low_risk = min(qualified.items(), key=lambda pair: pair[1]["avg_risk"])
+    approval_gap = round(highest[1]["approval_rate"] - lowest[1]["approval_rate"], 2)
+    risk_gap = round(high_risk[1]["avg_risk"] - low_risk[1]["avg_risk"], 2)
+
+    if approval_gap >= 30 or risk_gap >= 25:
+        status = "Escalate"
+        tone = "rejected"
+    elif approval_gap >= 18 or risk_gap >= 15:
+        status = "Watch"
+        tone = "warning"
+    else:
+        status = "Stable"
+        tone = "approved"
+
+    return {
+        "label": label,
+        "value": f"{approval_gap:.1f} pts",
+        "approval_gap": approval_gap,
+        "risk_gap": risk_gap,
+        "status": status,
+        "tone": tone,
+        "detail": (
+            f"Approval ranges from {lowest[1]['approval_rate']:.1f}% ({lowest[0]}) "
+            f"to {highest[1]['approval_rate']:.1f}% ({highest[0]})."
+        ),
+    }
+
+
+def build_fairness_proxy_monitor(history):
+    dimensions = [
+        build_group_dimension(history, "Age band", age_band),
+        build_group_dimension(history, "Education", lambda item: title_value(item.get("education"))),
+        build_group_dimension(history, "Marital status", lambda item: title_value(item.get("marital_status"))),
+    ]
+    alert_count = sum(1 for item in dimensions if item["tone"] == "rejected")
+    watch_count = sum(1 for item in dimensions if item["tone"] == "warning")
+    largest_gap = max((item["approval_gap"] for item in dimensions), default=0)
+
+    if len(history) < 8:
+        status = "Sample pending"
+        tone = "neutral"
+    elif alert_count:
+        status = "Fairness review"
+        tone = "rejected"
+    elif watch_count:
+        status = "Watch"
+        tone = "warning"
+    else:
+        status = "Stable"
+        tone = "approved"
+
+    return {
+        "status": status,
+        "tone": tone,
+        "largest_gap": round(largest_gap, 2),
+        "alert_count": alert_count,
+        "watch_count": watch_count,
+        "dimensions": dimensions,
+    }
+
+
+def build_data_quality_monitor(history):
+    total = len(history)
+    if not total:
+        return {
+            "status": "No samples",
+            "tone": "neutral",
+            "score": 0,
+            "alert_count": 0,
+            "watch_count": 0,
+            "checks": [],
+        }
+
+    invalid_inputs = sum(
+        1
+        for item in history
+        if not (
+            18 <= int(item.get("age") or 0) <= 80
+            and 300 <= float(item.get("credit_score") or 0) <= 900
+            and float(item.get("income") or 0) > 0
+            and float(item.get("loan_amount") or 0) > 0
+            and 12 <= int(item.get("loan_term_months") or DEFAULT_LOAN_TERM_MONTHS) <= 120
+        )
+    )
+    missing_contact = sum(1 for item in history if not item.get("applicant_email") or not item.get("phone"))
+    missing_explainability = sum(1 for item in history if not item.get("explain"))
+    affordability_outliers = sum(
+        1
+        for item in history
+        if item.get("intelligence", {}).get("payment_to_income", 0) > 45
+    )
+
+    valid_rate = percentage(total - invalid_inputs, total)
+    contact_rate = percentage(total - missing_contact, total)
+    explainability_rate = percentage(total - missing_explainability, total)
+    outlier_rate = percentage(affordability_outliers, total)
+    quality_score = round(
+        clamp(
+            valid_rate * 0.4 + contact_rate * 0.2 + explainability_rate * 0.25 + (100 - outlier_rate) * 0.15,
+            0,
+            100,
+        ),
+        2,
+    )
+
+    checks = [
+        {
+            "label": "Input validity",
+            "value": f"{valid_rate:.1f}%",
+            "tone": coverage_tone(valid_rate, 95, 90),
+            "detail": f"{invalid_inputs} records have impossible or missing numeric underwriting inputs.",
+        },
+        {
+            "label": "Contact readiness",
+            "value": f"{contact_rate:.1f}%",
+            "tone": coverage_tone(contact_rate, 92, 85),
+            "detail": "Applications need email and phone for notification traceability.",
+        },
+        {
+            "label": "Explainability coverage",
+            "value": f"{explainability_rate:.1f}%",
+            "tone": coverage_tone(explainability_rate, 95, 90),
+            "detail": "Every scored decision should retain adverse-action style reasons.",
+        },
+        {
+            "label": "Affordability outliers",
+            "value": f"{outlier_rate:.1f}%",
+            "tone": rate_tone(outlier_rate, 8, 15),
+            "detail": f"{affordability_outliers} records exceed the 45% payment-to-income stress threshold.",
+        },
+    ]
+    alert_count = sum(1 for check in checks if check["tone"] == "rejected")
+    watch_count = sum(1 for check in checks if check["tone"] == "warning")
+
+    if alert_count:
+        status = "Quality alert"
+        tone = "rejected"
+    elif watch_count:
+        status = "Watch"
+        tone = "warning"
+    else:
+        status = "Strong"
+        tone = "approved"
+
+    return {
+        "status": status,
+        "tone": tone,
+        "score": quality_score,
+        "alert_count": alert_count,
+        "watch_count": watch_count,
+        "checks": checks,
+    }
+
+
+def build_policy_alignment(history):
+    total = len(history)
+    high_risk_approved = [
+        item for item in history if item.get("result") == "Approved" and float(item.get("risk_score") or 0) >= 65
+    ]
+    low_risk_declined = [
+        item for item in history if item.get("result") == "Rejected" and float(item.get("risk_score") or 0) <= 25
+    ]
+    open_high_risk = [
+        item for item in history if is_review_open(item) and float(item.get("risk_score") or 0) >= 65
+    ]
+    exception_count = len(high_risk_approved) + len(low_risk_declined)
+    exception_rate = percentage(exception_count, total)
+    tone = rate_tone(exception_rate, 5, 12)
+    if tone == "rejected":
+        status = "Exceptions high"
+    elif tone == "warning":
+        status = "Watch"
+    else:
+        status = "Aligned"
+
+    return {
+        "status": status,
+        "tone": tone if total else "neutral",
+        "exception_count": exception_count,
+        "exception_rate": exception_rate,
+        "high_risk_approved": len(high_risk_approved),
+        "low_risk_declined": len(low_risk_declined),
+        "open_high_risk": len(open_high_risk),
+        "checks": [
+            {
+                "label": "High-risk approvals",
+                "value": len(high_risk_approved),
+                "tone": "rejected" if high_risk_approved else "approved",
+                "detail": "Approved applications with 65% or higher default risk.",
+            },
+            {
+                "label": "Low-risk declines",
+                "value": len(low_risk_declined),
+                "tone": "warning" if low_risk_declined else "approved",
+                "detail": "Declined applications with 25% or lower default risk.",
+            },
+            {
+                "label": "High-risk queue",
+                "value": len(open_high_risk),
+                "tone": "warning" if open_high_risk else "approved",
+                "detail": "Open review cases above the senior risk threshold.",
+            },
+        ],
+    }
+
+
+def build_model_card(history):
+    total = len(history)
+    source_counts = {}
+    for item in history:
+        source = item.get("model_source") or "Unknown source"
+        source_counts[source] = source_counts.get(source, 0) + 1
+
+    sources = [
+        {
+            "label": source,
+            "count": count,
+            "share": percentage(count, total),
+        }
+        for source, count in sorted(source_counts.items(), key=lambda pair: pair[1], reverse=True)
+    ]
+    fallback_count = sum(
+        count
+        for source, count in source_counts.items()
+        if "fallback" in source.lower() or "policy" in source.lower()
+    )
+    last_scored = history[0].get("created_at_label") if history else "No scores yet"
+
+    return {
+        "sample_size": total,
+        "model_available": os.path.exists(MODEL_FILE),
+        "model_status": "Saved model active" if os.path.exists(MODEL_FILE) else "Policy fallback",
+        "fallback_share": percentage(fallback_count, total),
+        "last_scored": last_scored,
+        "monitored_features": [feature["label"] for feature in GOVERNANCE_FEATURES],
+        "sources": sources[:4],
+    }
+
+
+def build_model_governance(history, review_queue):
+    drift = build_drift_monitor(history)
+    fairness = build_fairness_proxy_monitor(history)
+    quality = build_data_quality_monitor(history)
+    alignment = build_policy_alignment(history)
+    model_card = build_model_card(history)
+
+    penalty = (
+        drift["alert_count"] * 9
+        + drift["watch_count"] * 4
+        + fairness["alert_count"] * 10
+        + fairness["watch_count"] * 4
+        + quality["alert_count"] * 8
+        + quality["watch_count"] * 3
+        + min(18, alignment["exception_rate"] * 0.9)
+    )
+    score = int(round(clamp(100 - penalty, 0, 100))) if history else 0
+
+    if not history:
+        stage = "Awaiting data"
+        tone = "neutral"
+    elif score >= 90:
+        stage = "Audit ready"
+        tone = "approved"
+    elif score >= 75:
+        stage = "Controlled"
+        tone = "warning"
+    else:
+        stage = "Needs review"
+        tone = "rejected"
+
+    return {
+        "score": score,
+        "stage": stage,
+        "tone": tone,
+        "sample_size": len(history),
+        "open_reviews": len(review_queue),
+        "drift": drift,
+        "fairness": fairness,
+        "quality": quality,
+        "alignment": alignment,
+        "model_card": model_card,
+        "summary_cards": [
+            {
+                "label": "Governance score",
+                "value": f"{score}/100" if history else "No data",
+                "tone": tone,
+                "detail": "Composite of drift, fairness proxy, quality, and policy-alignment controls.",
+                "icon": "shield-check",
+            },
+            {
+                "label": "Drift monitor",
+                "value": drift["status"],
+                "tone": drift["tone"],
+                "detail": f"{drift['recent_count']} recent records compared with {drift['baseline_count']} baseline records.",
+                "icon": "activity",
+            },
+            {
+                "label": "Fairness proxy",
+                "value": fairness["status"],
+                "tone": fairness["tone"],
+                "detail": f"Largest approval-rate gap: {fairness['largest_gap']:.1f} percentage points.",
+                "icon": "scale",
+            },
+            {
+                "label": "Policy alignment",
+                "value": alignment["status"],
+                "tone": alignment["tone"],
+                "detail": f"{alignment['exception_count']} exception patterns across scored applications.",
+                "icon": "clipboard-check",
+            },
+        ],
+    }
+
+
+def fetch_monitoring_history(limit=500):
+    rows = fetch_all(
+        """
+        SELECT
+            p.*,
+            u.name AS owner_name,
+            u.email AS owner_email,
+            reviewer.name AS reviewer_name
+        FROM predictions p
+        JOIN users u ON u.id = p.user_id
+        LEFT JOIN users reviewer ON reviewer.id = p.reviewed_by
+        ORDER BY p.created_at DESC, p.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    return [clean_prediction(row) for row in rows]
 
 
 def build_applicant_query(args):
@@ -1389,6 +2519,104 @@ def build_risk_admin_insights(history):
     }
 
 
+def build_portfolio_intelligence(history, review_queue, customer_loans):
+    total_exposure = round(sum(item["loan_amount"] for item in history), 2)
+    approved_exposure = round(
+        sum(item["loan_amount"] for item in history if item.get("result") == "Approved"),
+        2,
+    )
+    high_risk_exposure = round(
+        sum(item["loan_amount"] for item in history if item.get("risk_score", 0) >= 60),
+        2,
+    )
+    open_review_exposure = round(sum(item["loan_amount"] for item in review_queue), 2)
+    expected_loss = round(sum(item["intelligence"]["expected_loss"] for item in history), 2)
+    total = len(history)
+    avg_approval = round(sum(item["approval_probability"] for item in history) / total, 2) if total else 0
+    high_risk_share = round((high_risk_exposure / total_exposure) * 100, 2) if total_exposure else 0
+    expected_loss_rate = round((expected_loss / total_exposure) * 100, 2) if total_exposure else 0
+    risk_bands = {
+        "Low": sum(1 for item in history if item["risk_label"] == "Low"),
+        "Medium": sum(1 for item in history if item["risk_label"] == "Medium"),
+        "High": sum(1 for item in history if item["risk_label"] == "High"),
+    }
+
+    avg_risk = round(sum(item["risk_score"] for item in history) / total, 2) if total else 0
+    if not total:
+        portfolio_grade = "N/A"
+        portfolio_tone = "neutral"
+    elif avg_risk <= 25 and high_risk_share <= 10:
+        portfolio_grade = "A"
+        portfolio_tone = "approved"
+    elif avg_risk <= 40 and high_risk_share <= 25:
+        portfolio_grade = "B"
+        portfolio_tone = "approved"
+    elif avg_risk <= 58:
+        portfolio_grade = "C"
+        portfolio_tone = "warning"
+    else:
+        portfolio_grade = "D"
+        portfolio_tone = "rejected"
+
+    action_items = []
+    if review_queue:
+        action_items.append(
+            {
+                "title": "Clear review exposure",
+                "detail": f"${open_review_exposure:,.0f} is waiting for officer action.",
+                "tone": "neutral",
+                "icon": "clipboard-check",
+            }
+        )
+    if high_risk_exposure:
+        action_items.append(
+            {
+                "title": "Escalate high-risk cases",
+                "detail": f"${high_risk_exposure:,.0f} sits in the high-risk band.",
+                "tone": "rejected" if high_risk_share > 30 else "warning",
+                "icon": "shield-alert",
+            }
+        )
+    pending_payments = sum(
+        1
+        for loan in customer_loans
+        if loan.get("balance_amount", 0) > 0 and loan.get("payment_status") != "paid"
+    )
+    if pending_payments:
+        action_items.append(
+            {
+                "title": "Payment follow-up",
+                "detail": f"{pending_payments} active loan payment checkpoint needs attention.",
+                "tone": "neutral",
+                "icon": "receipt-text",
+            }
+        )
+    if not action_items:
+        action_items.append(
+            {
+                "title": "Control room clear",
+                "detail": "No urgent portfolio action is visible in the current data slice.",
+                "tone": "approved",
+                "icon": "badge-check",
+            }
+        )
+
+    return {
+        "portfolio_grade": portfolio_grade,
+        "portfolio_tone": portfolio_tone,
+        "total_exposure": total_exposure,
+        "approved_exposure": approved_exposure,
+        "open_review_exposure": open_review_exposure,
+        "high_risk_exposure": high_risk_exposure,
+        "high_risk_share": high_risk_share,
+        "expected_loss": expected_loss,
+        "expected_loss_rate": expected_loss_rate,
+        "avg_approval": avg_approval,
+        "risk_bands": risk_bands,
+        "action_items": action_items[:3],
+    }
+
+
 def get_dashboard_payload(user, applicant_query=None):
     query, params = scoped_prediction_query(user)
     rows = fetch_all(query, params)
@@ -1426,6 +2654,8 @@ def get_dashboard_payload(user, applicant_query=None):
         ),
         "paid": sum(1 for loan in customer_loans if loan.get("payment_status") == "paid"),
     }
+    portfolio_intelligence = build_portfolio_intelligence(history, review_queue, customer_loans)
+    model_governance = build_model_governance(history, review_queue)
 
     return {
         "history": history,
@@ -1437,6 +2667,8 @@ def get_dashboard_payload(user, applicant_query=None):
         "notifications": notifications,
         "risk_insights": risk_insights,
         "applicant_lookup": applicant_lookup,
+        "portfolio_intelligence": portfolio_intelligence,
+        "model_governance": model_governance,
         "assurance_checks": build_assurance_checks(review_queue),
         "metrics": {
             "total": total,
@@ -1456,7 +2688,139 @@ def get_dashboard_payload(user, applicant_query=None):
             "scores": [item["credit_score"] for item in history[:20]][::-1],
             "risk_scores": [item["risk_score"] for item in history[:20]][::-1],
             "labels": [f"#{item['id']}" for item in history[:20]][::-1],
+            "risk_bands": portfolio_intelligence["risk_bands"],
         },
+    }
+
+
+def fetch_prediction_detail(prediction_id):
+    row = fetch_one(
+        """
+        SELECT
+            p.*,
+            u.name AS owner_name,
+            u.email AS owner_email,
+            reviewer.name AS reviewer_name
+        FROM predictions p
+        JOIN users u ON u.id = p.user_id
+        LEFT JOIN users reviewer ON reviewer.id = p.reviewed_by
+        WHERE p.id = ?
+        """,
+        (prediction_id,),
+    )
+    return clean_prediction(row) if row else None
+
+
+def accessible_monitoring_history(user):
+    if user["role"] in {"bank_officer", "risk_admin"}:
+        return fetch_monitoring_history()
+
+    query, params = scoped_prediction_query(user)
+    rows = fetch_all(query, params)
+    return [clean_prediction(row) for row in rows]
+
+
+def build_decision_memo_context(prediction_id, user):
+    prediction = fetch_prediction_detail(prediction_id)
+    if not prediction:
+        return None
+
+    if user["role"] == "customer" and prediction.get("user_id") != user["id"]:
+        abort(403)
+
+    history = accessible_monitoring_history(user)
+    review_queue = [item for item in history if is_review_open(item)]
+    governance = build_model_governance(history, review_queue)
+    intelligence = build_decision_intelligence(
+        prediction["credit_score"],
+        prediction["income"],
+        prediction["loan_amount"],
+        prediction["employment_years"],
+        prediction["loan_term_months"],
+        prediction["approval_probability"],
+        prediction["risk_score"],
+        prediction["result"],
+    )
+    prediction["intelligence"] = intelligence
+
+    applicant_profile = [
+        {"label": "Applicant", "value": prediction["applicant_label"]},
+        {"label": "Contact", "value": prediction.get("applicant_email") or prediction.get("owner_email") or "Not provided"},
+        {"label": "Phone", "value": mask_phone(prediction.get("phone")) or "Not provided"},
+        {"label": "Age", "value": prediction["age"]},
+        {"label": "Education", "value": title_value(prediction.get("education"))},
+        {"label": "Marital status", "value": title_value(prediction.get("marital_status"))},
+        {"label": "Dependents", "value": prediction["dependents"]},
+        {"label": "Employment", "value": f"{prediction['employment_years']} years"},
+    ]
+    decision_metrics = [
+        {"label": "Decision", "value": prediction["result"], "tone": "approved" if prediction["result"] == "Approved" else "rejected"},
+        {"label": "Status", "value": prediction["status_label"], "tone": prediction["status_tone"]},
+        {"label": "Approval probability", "value": f"{prediction['approval_probability']}%", "tone": "approved"},
+        {"label": "Default risk", "value": f"{prediction['risk_score']}%", "tone": "rejected" if prediction["risk_score"] >= 60 else "warning" if prediction["risk_score"] >= 30 else "approved"},
+        {"label": "Underwriting grade", "value": intelligence["grade"], "tone": intelligence["grade_tone"]},
+        {"label": "Expected loss", "value": f"${intelligence['expected_loss']:,.0f}", "tone": "neutral"},
+        {"label": "Risk APR", "value": f"{intelligence['estimated_apr']}%", "tone": "neutral"},
+        {"label": "Recommended limit", "value": f"${intelligence['recommended_limit']:,.0f}", "tone": "approved"},
+    ]
+    loan_terms = [
+        {"label": "Annual income", "value": f"${prediction['income']:,.0f}"},
+        {"label": "Requested loan", "value": f"${prediction['loan_amount']:,.0f}"},
+        {"label": "Loan term", "value": f"{prediction['loan_term_months']} months"},
+        {"label": "Monthly payment estimate", "value": f"${intelligence['monthly_payment']:,.0f}"},
+        {"label": "Payment-to-income", "value": f"{intelligence['payment_to_income']}%"},
+        {"label": "Loan-to-income", "value": f"{intelligence['loan_to_income']}%"},
+    ]
+    governance_snapshot = [
+        {"label": "Governance score", "value": f"{governance['score']}/100", "tone": governance["tone"]},
+        {"label": "Drift", "value": governance["drift"]["status"], "tone": governance["drift"]["tone"]},
+        {"label": "Fairness proxy", "value": governance["fairness"]["status"], "tone": governance["fairness"]["tone"]},
+        {"label": "Data quality", "value": governance["quality"]["status"], "tone": governance["quality"]["tone"]},
+        {"label": "Policy alignment", "value": governance["alignment"]["status"], "tone": governance["alignment"]["tone"]},
+        {"label": "Model mode", "value": governance["model_card"]["model_status"], "tone": "approved" if governance["model_card"]["model_available"] else "neutral"},
+    ]
+    audit_events = [
+        {
+            "label": "Application scored",
+            "value": prediction["created_at_label"] or "Recorded",
+            "detail": f"{prediction['model_source'] or 'Decision engine'} generated the first decision.",
+        }
+    ]
+    if prediction.get("reviewed_at_label"):
+        audit_events.append(
+            {
+                "label": "Officer review",
+                "value": prediction["reviewed_at_label"],
+                "detail": f"{prediction.get('reviewer_name') or 'Review officer'} set status to {prediction['status_label']}.",
+            }
+        )
+    elif is_review_open(prediction):
+        audit_events.append(
+            {
+                "label": "Review pending",
+                "value": prediction["status_label"],
+                "detail": "Application remains available in the officer review queue.",
+            }
+        )
+    else:
+        audit_events.append(
+            {
+                "label": "Final status",
+                "value": prediction["status_label"],
+                "detail": "Decision status is locked outside the open review queue.",
+            }
+        )
+
+    return {
+        "memo_id": f"CS-{prediction_id:06d}",
+        "generated_at": format_short_datetime(now_iso()),
+        "prediction": prediction,
+        "applicant_profile": applicant_profile,
+        "decision_metrics": decision_metrics,
+        "loan_terms": loan_terms,
+        "governance_snapshot": governance_snapshot,
+        "audit_events": audit_events,
+        "governance": governance,
     }
 
 
@@ -1548,6 +2912,16 @@ def dashboard():
     return render_template("index.html", **payload, last_prediction=last_prediction)
 
 
+@app.route("/decision/<int:prediction_id>/memo")
+@login_required
+def decision_memo(prediction_id):
+    user = current_user()
+    context = build_decision_memo_context(prediction_id, user)
+    if not context:
+        abort(404)
+    return render_template("decision_memo.html", **context)
+
+
 @app.route("/predict", methods=["POST"])
 @login_required
 def create_prediction():
@@ -1588,6 +2962,16 @@ def create_prediction():
     explanations = build_explainability(score, income, loan, experience, loan_term_months)
     suggestions = build_suggestions(score, income, loan, experience)
     auto_explain = build_auto_explanation(result, score, income, loan, approval_probability, risk_score)
+    intelligence = build_decision_intelligence(
+        score,
+        income,
+        loan,
+        experience,
+        loan_term_months,
+        approval_probability,
+        risk_score,
+        result,
+    )
     status = decision_status(result, risk_score)
 
     prediction_id = execute(
@@ -1675,6 +3059,7 @@ CrediSense AI
         "model_source": prediction["source"],
         "explain": explanations,
         "suggestions": suggestions,
+        "intelligence": intelligence,
         "status": prediction_status_label(status),
     }
     flash(f"Application #{prediction_id} scored successfully.", "success")
@@ -2022,6 +3407,16 @@ def simulate():
         experience=experience,
         loan_term_months=loan_term_months,
     )
+    intelligence = build_decision_intelligence(
+        score,
+        income,
+        loan,
+        experience,
+        loan_term_months,
+        prediction["approval_probability"],
+        prediction["risk_score"],
+        prediction["result"],
+    )
 
     return jsonify(
         {
@@ -2029,6 +3424,7 @@ def simulate():
             "approval_probability": prediction["approval_probability"],
             "risk_score": prediction["risk_score"],
             "risk_label": risk_label(prediction["risk_score"]),
+            "intelligence": intelligence,
         }
     )
 
@@ -2041,16 +3437,92 @@ def chat():
     score = coerce_float(data.get("score"), 0, 0)
     income = coerce_float(data.get("income"), 0, 0)
     loan = coerce_float(data.get("loan"), 0, 0)
+    experience = coerce_float(data.get("experience"), 2, 0, 50)
+    loan_term_months = coerce_int(data.get("loan_term_months"), DEFAULT_LOAN_TERM_MONTHS, 12, 120)
+    scenario_intelligence = None
+    if score and income and loan:
+        scenario_prediction = predict_credit_risk(
+            age=30,
+            income=income,
+            loan=loan,
+            score=score,
+            marital_status="single",
+            education="bachelor",
+            dependents=0,
+            experience=experience,
+            loan_term_months=loan_term_months,
+        )
+        scenario_intelligence = build_decision_intelligence(
+            score,
+            income,
+            loan,
+            experience,
+            loan_term_months,
+            scenario_prediction["approval_probability"],
+            scenario_prediction["risk_score"],
+            scenario_prediction["result"],
+        )
 
-    if "reject" in message or "decline" in message:
+    if "rescue" in message or "counterfactual" in message or "path" in message:
+        if scenario_intelligence and scenario_intelligence.get("rescue_plan"):
+            plan = scenario_intelligence["rescue_plan"]
+            reply = (
+                f"{plan['status']}: target a {plan['target_score']} score, "
+                f"{format_money(plan['target_loan'])} loan, and {plan['target_term']}-month term. "
+                f"That path changes approval by {plan['approval_lift']} points and risk by {plan['risk_reduction']} points."
+            )
+        else:
+            reply = "Add score, income, loan, term, and experience so I can build a counterfactual approval path."
+    elif "reject" in message or "decline" in message:
         reply = "The most common rejection drivers are low credit score, high loan-to-income ratio, and weak employment stability."
+    elif "grade" in message or "policy" in message or "underwriting" in message:
+        if scenario_intelligence:
+            reply = (
+                f"This scenario is grade {scenario_intelligence['grade']}. "
+                f"Primary action: {scenario_intelligence['action']}. "
+                f"Top control: {scenario_intelligence['policy_flags'][0]['label']}."
+            )
+        else:
+            reply = "Add score, income, and loan values so I can produce a policy grade and top underwriting control."
+    elif "price" in message or "apr" in message or "rate" in message:
+        if scenario_intelligence:
+            reply = (
+                f"Risk-adjusted pricing guidance is about {scenario_intelligence['estimated_apr']}% APR, "
+                f"with an estimated monthly payment of ${scenario_intelligence['monthly_payment']:,.2f}."
+            )
+        else:
+            reply = "Pricing needs a score, income, and requested loan amount."
+    elif "loss" in message or "expected" in message:
+        if scenario_intelligence:
+            reply = (
+                f"Expected-loss estimate is ${scenario_intelligence['expected_loss']:,.2f}, "
+                f"using {scenario_intelligence['loss_given_default']}% loss given default."
+            )
+        else:
+            reply = "Expected loss needs a scored scenario first."
+    elif "governance" in message or "drift" in message or "fairness" in message or "audit" in message:
+        payload = get_dashboard_payload(current_user())
+        governance = payload["model_governance"]
+        reply = (
+            f"Governance is {governance['stage']} at {governance['score']}/100. "
+            f"Drift is {governance['drift']['status']}, fairness proxy is {governance['fairness']['status']}, "
+            f"and policy alignment is {governance['alignment']['status']}."
+        )
     elif "payment" in message or "due" in message:
         reply = "Open the loan wallet on your customer dashboard to see payment due time, balance, and the demo payment button."
     elif "credited" in message or "money" in message or "take loan" in message:
         reply = "If your application is approved, use Take Loan in the customer loan wallet. The app will show a credited message and payment schedule."
     elif "improve" in message:
-        safe_loan = int(max(income * 0.45, 0))
-        reply = f"Improve the score above 700, keep the requested loan near {safe_loan}, and add stable income proof."
+        if scenario_intelligence and scenario_intelligence.get("rescue_plan"):
+            plan = scenario_intelligence["rescue_plan"]
+            top_step = plan["steps"][0] if plan["steps"] else {"label": "Verification pack", "detail": "Add supporting documents."}
+            reply = (
+                f"Start with {top_step['label']}: {top_step['detail']} "
+                f"The rescue target is {format_money(plan['target_loan'])} at score {plan['target_score']}."
+            )
+        else:
+            safe_loan = int(max(income * 0.45, 0))
+            reply = f"Improve the score above 700, keep the requested loan near {safe_loan}, and add stable income proof."
     elif "safe" in message or "loan" in message:
         safe_loan = int(max(income * 0.45, 0))
         reply = f"A conservative loan range for this income is around {safe_loan}, assuming low existing debt."
@@ -2067,6 +3539,9 @@ def chat():
 @app.route("/api/health")
 def health():
     model = load_credit_model()
+    history = fetch_monitoring_history()
+    review_queue = [item for item in history if is_review_open(item)]
+    governance = build_model_governance(history, review_queue)
     return jsonify(
         {
             "status": "ok",
@@ -2076,6 +3551,14 @@ def health():
             "email_configured": email_configured(),
             "sms_configured": sms_configured(),
             "status_integrity_issues": status_integrity_issue_count(),
+            "model_governance": {
+                "score": governance["score"],
+                "stage": governance["stage"],
+                "drift_status": governance["drift"]["status"],
+                "fairness_status": governance["fairness"]["status"],
+                "quality_status": governance["quality"]["status"],
+                "policy_exceptions": governance["alignment"]["exception_count"],
+            },
         }
     )
 

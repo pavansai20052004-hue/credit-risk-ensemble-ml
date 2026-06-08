@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>CrediSense AI | Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -10,7 +11,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body class="dashboard-page">
+<body class="dashboard-page" data-page="dashboard" data-user-name="{{ current_user.name }}" data-role="{{ current_user.role }}" data-role-label="{{ role_labels[current_user.role] }}">
     <div class="app-shell">
         <aside class="sidebar">
             <div class="sidebar-brand">
@@ -23,6 +24,8 @@
 
             <nav class="sidebar-nav" aria-label="Main navigation">
                 <a href="#overview" class="active"><i data-lucide="layout-dashboard"></i> Overview</a>
+                <a href="#command"><i data-lucide="radar"></i> Command</a>
+                <a href="#governance"><i data-lucide="shield-check"></i> Governance</a>
                 {% if current_user.role == "customer" %}
                 <a href="#new-application"><i data-lucide="file-plus-2"></i> New Application</a>
                 {% else %}
@@ -54,6 +57,7 @@
                 </div>
                 {% if current_user.plan == "Starter" %}
                 <form action="{{ url_for('upgrade_plan') }}" method="POST">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="secondary-button full">
                         <i data-lucide="sparkles"></i>
                         Upgrade
@@ -72,9 +76,16 @@
                     <h1>Credit risk command center</h1>
                 </div>
                 <div class="topbar-actions">
+                    <button id="roleIntroVoice" type="button" class="secondary-button">
+                        <i data-lucide="radio"></i>
+                        Start Intro
+                    </button>
                     <button id="voiceToggle" type="button" class="secondary-button" aria-pressed="true">
                         <i data-lucide="volume-2"></i>
                         Voice On
+                    </button>
+                    <button id="stopVoiceGlobal" type="button" class="secondary-button icon-button" aria-label="Stop voice">
+                        <i data-lucide="volume-x"></i>
                     </button>
                     <a class="secondary-button" href="{{ url_for('health') }}"><i data-lucide="activity"></i> Health</a>
                     {% if current_user.role == "customer" %}
@@ -118,6 +129,69 @@
                 </article>
             </section>
 
+            <section class="command-grid" id="command">
+                <section class="panel intelligence-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Enterprise intelligence</p>
+                            <h2>Portfolio command</h2>
+                        </div>
+                        <span class="status-chip {{ portfolio_intelligence.portfolio_tone }}">Grade {{ portfolio_intelligence.portfolio_grade }}</span>
+                    </div>
+                    <div class="portfolio-command">
+                        <div class="grade-orb {{ portfolio_intelligence.portfolio_tone }}">
+                            <span>Risk grade</span>
+                            <strong>{{ portfolio_intelligence.portfolio_grade }}</strong>
+                            <small>{{ portfolio_intelligence.high_risk_share }}% high-risk exposure</small>
+                        </div>
+                        <div class="intel-kpi-grid">
+                            <div>
+                                <span>Total exposure</span>
+                                <strong>${{ "{:,.0f}".format(portfolio_intelligence.total_exposure) }}</strong>
+                            </div>
+                            <div>
+                                <span>Expected loss</span>
+                                <strong>${{ "{:,.0f}".format(portfolio_intelligence.expected_loss) }}</strong>
+                            </div>
+                            <div>
+                                <span>Review exposure</span>
+                                <strong>${{ "{:,.0f}".format(portfolio_intelligence.open_review_exposure) }}</strong>
+                            </div>
+                            <div>
+                                <span>Avg approval</span>
+                                <strong>{{ portfolio_intelligence.avg_approval }}%</strong>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="risk-band-strip" aria-label="Risk band mix">
+                        <div class="band low" style="--band-count: {{ portfolio_intelligence.risk_bands.Low }}"><span>Low</span><strong>{{ portfolio_intelligence.risk_bands.Low }}</strong></div>
+                        <div class="band medium" style="--band-count: {{ portfolio_intelligence.risk_bands.Medium }}"><span>Medium</span><strong>{{ portfolio_intelligence.risk_bands.Medium }}</strong></div>
+                        <div class="band high" style="--band-count: {{ portfolio_intelligence.risk_bands.High }}"><span>High</span><strong>{{ portfolio_intelligence.risk_bands.High }}</strong></div>
+                    </div>
+                </section>
+
+                <section class="panel action-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Control actions</p>
+                            <h2>Next best actions</h2>
+                        </div>
+                        <span class="pill">{{ portfolio_intelligence.expected_loss_rate }}% EL rate</span>
+                    </div>
+                    <div class="action-stack">
+                        {% for action in portfolio_intelligence.action_items %}
+                        <article class="action-card {{ action.tone }}">
+                            <div class="action-icon"><i data-lucide="{{ action.icon }}"></i></div>
+                            <div>
+                                <strong>{{ action.title }}</strong>
+                                <small>{{ action.detail }}</small>
+                            </div>
+                        </article>
+                        {% endfor %}
+                    </div>
+                </section>
+            </section>
+
             <section class="panel assurance-panel" aria-label="System assurance">
                 <div class="panel-header">
                     <div>
@@ -138,6 +212,161 @@
                     </article>
                     {% endfor %}
                 </div>
+            </section>
+
+            <section class="governance-grid" id="governance">
+                <section class="panel governance-command-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Model risk management</p>
+                            <h2>Governance center</h2>
+                        </div>
+                        <span class="status-chip {{ model_governance.tone }}">{{ model_governance.stage }}</span>
+                    </div>
+                    <div class="governance-command">
+                        <div class="governance-score-ring {{ model_governance.tone }}" style="--score-angle: {{ model_governance.score * 3.6 }}deg">
+                            <span>Control score</span>
+                            <strong>{{ model_governance.score }}</strong>
+                            <small>/ 100</small>
+                        </div>
+                        <div class="governance-card-grid">
+                            {% for card in model_governance.summary_cards %}
+                            <article class="governance-card {{ card.tone }}">
+                                <div class="governance-icon"><i data-lucide="{{ card.icon }}"></i></div>
+                                <div>
+                                    <span>{{ card.label }}</span>
+                                    <strong>{{ card.value }}</strong>
+                                    <small>{{ card.detail }}</small>
+                                </div>
+                            </article>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel model-card-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Audit artifact</p>
+                            <h2>Live model card</h2>
+                        </div>
+                        <span class="pill">{{ model_governance.model_card.sample_size }} samples</span>
+                    </div>
+                    <div class="model-card-facts">
+                        <div>
+                            <span>Serving mode</span>
+                            <strong>{{ model_governance.model_card.model_status }}</strong>
+                            <small>{{ model_governance.model_card.fallback_share }}% policy fallback share</small>
+                        </div>
+                        <div>
+                            <span>Last score</span>
+                            <strong>{{ model_governance.model_card.last_scored }}</strong>
+                            <small>{{ model_governance.sample_size }} monitored decisions</small>
+                        </div>
+                    </div>
+                    <div class="model-source-list">
+                        {% for source in model_governance.model_card.sources %}
+                        <div>
+                            <span>{{ source.label }}</span>
+                            <strong>{{ source.count }}</strong>
+                            <small>{{ source.share }}%</small>
+                        </div>
+                        {% else %}
+                        <div>
+                            <span>No model sources</span>
+                            <strong>0</strong>
+                            <small>Awaiting scores</small>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <div class="feature-chip-row">
+                        {% for feature in model_governance.model_card.monitored_features %}
+                        <span>{{ feature }}</span>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="panel governance-monitor-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Population stability</p>
+                            <h2>Drift monitor</h2>
+                        </div>
+                        <span class="status-chip {{ model_governance.drift.tone }}">{{ model_governance.drift.status }}</span>
+                    </div>
+                    <div class="governance-check-grid">
+                        {% for metric in model_governance.drift.metrics %}
+                        <article class="governance-check {{ metric.tone }}">
+                            <span>{{ metric.label }}</span>
+                            <strong>{{ metric.value }}</strong>
+                            <small>{{ metric.status }} &middot; {{ metric.detail }}</small>
+                        </article>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="panel governance-monitor-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Fair lending proxy</p>
+                            <h2>Fairness checks</h2>
+                        </div>
+                        <span class="status-chip {{ model_governance.fairness.tone }}">{{ model_governance.fairness.status }}</span>
+                    </div>
+                    <div class="governance-check-grid">
+                        {% for dimension in model_governance.fairness.dimensions %}
+                        <article class="governance-check {{ dimension.tone }}">
+                            <span>{{ dimension.label }}</span>
+                            <strong>{{ dimension.value }}</strong>
+                            <small>{{ dimension.status }} &middot; {{ dimension.detail }}</small>
+                        </article>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="panel governance-monitor-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Data controls</p>
+                            <h2>Quality guardrails</h2>
+                        </div>
+                        <span class="status-chip {{ model_governance.quality.tone }}">{{ model_governance.quality.score }}%</span>
+                    </div>
+                    <div class="governance-check-grid">
+                        {% for check in model_governance.quality.checks %}
+                        <article class="governance-check {{ check.tone }}">
+                            <span>{{ check.label }}</span>
+                            <strong>{{ check.value }}</strong>
+                            <small>{{ check.detail }}</small>
+                        </article>
+                        {% else %}
+                        <article class="governance-check neutral">
+                            <span>No samples</span>
+                            <strong>Pending</strong>
+                            <small>Quality checks activate after the first scored application.</small>
+                        </article>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="panel governance-monitor-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Policy controls</p>
+                            <h2>Decision alignment</h2>
+                        </div>
+                        <span class="status-chip {{ model_governance.alignment.tone }}">{{ model_governance.alignment.status }}</span>
+                    </div>
+                    <div class="governance-check-grid">
+                        {% for check in model_governance.alignment.checks %}
+                        <article class="governance-check {{ check.tone }}">
+                            <span>{{ check.label }}</span>
+                            <strong>{{ check.value }}</strong>
+                            <small>{{ check.detail }}</small>
+                        </article>
+                        {% endfor %}
+                    </div>
+                </section>
             </section>
 
             {% if current_user.role == "customer" %}
@@ -211,6 +440,7 @@
                                 <small>{{ offer.approval_probability }}% approval probability</small>
                             </div>
                             <form action="{{ url_for('take_loan', prediction_id=offer.id) }}" method="POST">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                 <button type="submit" class="primary-button">
                                     <i data-lucide="banknote"></i>
                                     Take loan
@@ -267,6 +497,9 @@
                     </div>
 
                     <form action="{{ url_for('create_prediction') if current_user.role == 'customer' else url_for('dashboard') }}" method="{{ 'POST' if current_user.role == 'customer' else 'GET' }}" class="application-form">
+                        {% if current_user.role == 'customer' %}
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                        {% endif %}
                         <label>
                             Applicant name
                             <input name="name" value="{{ current_user.name if current_user.role == 'customer' else applicant_lookup.query.name }}" placeholder="Applicant name" {% if current_user.role == 'customer' %}required{% endif %}>
@@ -345,25 +578,169 @@
                     </div>
 
                     {% if last_prediction %}
-                    <div class="decision-score">
-                        <div>
-                            <span>Approval probability</span>
-                            <strong>{{ last_prediction.approval_probability }}%</strong>
+                    {% set needle_angle = (last_prediction.risk_score * 1.8 - 90)|round(2) %}
+                    <div class="prediction-output-card">
+                        <div class="prediction-output-header">
+                            <strong>Credit Risk Assessment - Prediction Output</strong>
+                            <span class="assessment-badge {{ 'approved' if last_prediction.result == 'Approved' else 'rejected' }}">{{ last_prediction.result|upper }}</span>
                         </div>
-                        <div>
-                            <span>Default risk</span>
-                            <strong>{{ last_prediction.risk_score }}%</strong>
+                        <div class="prediction-output-grid">
+                            <section class="default-probability-card" aria-label="Default probability {{ last_prediction.risk_score }} percent">
+                                <span class="assessment-title">Default Probability</span>
+                                <div class="default-gauge">
+                                    <svg viewBox="0 0 180 118" role="img" aria-hidden="true">
+                                        <path class="gauge-base" d="M 28 88 A 62 62 0 0 1 152 88" pathLength="100"></path>
+                                        <path class="gauge-segment low" d="M 28 88 A 62 62 0 0 1 152 88" pathLength="100"></path>
+                                        <path class="gauge-segment medium" d="M 28 88 A 62 62 0 0 1 152 88" pathLength="100"></path>
+                                        <path class="gauge-segment high" d="M 28 88 A 62 62 0 0 1 152 88" pathLength="100"></path>
+                                        <line class="gauge-needle" x1="90" y1="88" x2="90" y2="38" transform="rotate({{ needle_angle }} 90 88)"></line>
+                                        <circle class="gauge-pivot" cx="90" cy="88" r="5"></circle>
+                                    </svg>
+                                    <div class="default-gauge-value">
+                                        <strong>{{ last_prediction.risk_score }}%</strong>
+                                        <span>{{ last_prediction.risk_label }} Risk Band</span>
+                                    </div>
+                                </div>
+                                <small>Approval probability {{ last_prediction.approval_probability }}%</small>
+                            </section>
+
+                            <section class="model-explanation-card" aria-label="Top model explanations">
+                                <span class="assessment-title">Top Model Explanations</span>
+                                <div class="explanation-bars">
+                                    {% for factor in last_prediction.explain %}
+                                    {% set default_impact = (factor.impact / -100) %}
+                                    {% set impact_abs = default_impact if default_impact >= 0 else -default_impact %}
+                                    <div class="explanation-row {{ 'risk' if default_impact > 0 else 'protective' }}">
+                                        <span>{{ factor.feature }}</span>
+                                        <div class="explanation-track"><span style="width: {{ impact_abs * 250 }}%"></span></div>
+                                        <strong>{{ "{:+.2f}".format(default_impact) }}</strong>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                <div class="explanation-tags">
+                                    <span>Risk tuned</span>
+                                    <span>Audit ready</span>
+                                    <span>Policy factors</span>
+                                </div>
+                            </section>
                         </div>
                     </div>
-                    <div class="risk-meter" aria-label="Risk meter">
-                        <span style="width: {{ last_prediction.risk_score }}%"></span>
+                    <div class="underwriting-memo">
+                        <div class="memo-head">
+                            <div class="decision-grade {{ last_prediction.intelligence.grade_tone }}">
+                                <span>Grade</span>
+                                <strong>{{ last_prediction.intelligence.grade }}</strong>
+                            </div>
+                            <div>
+                                <span class="mini-label">Recommended action</span>
+                                <strong>{{ last_prediction.intelligence.action }}</strong>
+                                <small>{{ last_prediction.intelligence.review_sla }} review target</small>
+                            </div>
+                        </div>
+                        <div class="memo-grid">
+                            <div>
+                                <span>Risk APR</span>
+                                <strong>{{ last_prediction.intelligence.estimated_apr }}%</strong>
+                            </div>
+                            <div>
+                                <span>Monthly pay</span>
+                                <strong>${{ "{:,.0f}".format(last_prediction.intelligence.monthly_payment) }}</strong>
+                            </div>
+                            <div>
+                                <span>Payment load</span>
+                                <strong>{{ last_prediction.intelligence.payment_to_income }}%</strong>
+                            </div>
+                            <div>
+                                <span>Expected loss</span>
+                                <strong>${{ "{:,.0f}".format(last_prediction.intelligence.expected_loss) }}</strong>
+                            </div>
+                            <div>
+                                <span>Limit guide</span>
+                                <strong>${{ "{:,.0f}".format(last_prediction.intelligence.recommended_limit) }}</strong>
+                            </div>
+                        </div>
+                        <div class="policy-flag-list">
+                            {% for flag in last_prediction.intelligence.policy_flags %}
+                            <article class="policy-flag {{ flag.tone }}">
+                                <i data-lucide="{{ flag.icon }}"></i>
+                                <div>
+                                    <strong>{{ flag.label }}</strong>
+                                    <small>{{ flag.detail }}</small>
+                                </div>
+                            </article>
+                            {% endfor %}
+                        </div>
                     </div>
+                    {% set rescue = last_prediction.intelligence.rescue_plan if last_prediction.intelligence.rescue_plan is defined else none %}
+                    {% if rescue %}
+                    <section class="rescue-plan-card {{ rescue.tone }}">
+                        <div class="rescue-plan-header">
+                            <div>
+                                <p class="eyebrow">Counterfactual intelligence</p>
+                                <h3>Approval rescue plan</h3>
+                                <p>{{ rescue.summary }}</p>
+                            </div>
+                            <div class="rescue-score-ring {{ rescue.tone }}" style="--rescue-score: {{ rescue.readiness_score * 3.6 }}deg">
+                                <span>Readiness</span>
+                                <strong>{{ rescue.readiness_score }}</strong>
+                            </div>
+                        </div>
+                        <div class="rescue-kpi-grid">
+                            <div>
+                                <span>Status</span>
+                                <strong>{{ rescue.status }}</strong>
+                            </div>
+                            <div>
+                                <span>Approval lift</span>
+                                <strong>{{ "{:+.1f}".format(rescue.approval_lift) }} pts</strong>
+                            </div>
+                            <div>
+                                <span>Risk change</span>
+                                <strong>{{ "{:+.1f}".format(0 - rescue.risk_reduction) }} pts</strong>
+                            </div>
+                            <div>
+                                <span>Target offer</span>
+                                <strong>${{ "{:,.0f}".format(rescue.target_loan) }}</strong>
+                            </div>
+                        </div>
+                        <div class="rescue-scenario-grid">
+                            {% for scenario in rescue.scenarios %}
+                            <article class="scenario-card {{ scenario.grade_tone }}">
+                                <span>{{ scenario.label }}</span>
+                                <strong>Grade {{ scenario.grade }} &middot; {{ scenario.result }}</strong>
+                                <small>${{ "{:,.0f}".format(scenario.loan_amount) }} loan, {{ scenario.score }} score, {{ scenario.risk_score }}% risk</small>
+                            </article>
+                            {% endfor %}
+                        </div>
+                        <div class="rescue-step-list">
+                            {% for step in rescue.steps %}
+                            <article class="rescue-step {{ step.tone }}">
+                                <i data-lucide="{{ step.icon }}"></i>
+                                <div>
+                                    <strong>{{ step.label }}</strong>
+                                    <small>{{ step.current }} &rarr; {{ step.target }}</small>
+                                    <p>{{ step.detail }}</p>
+                                </div>
+                            </article>
+                            {% endfor %}
+                        </div>
+                        <div class="blocker-chip-row">
+                            {% for blocker in rescue.blockers %}
+                            <span>{{ blocker }}</span>
+                            {% endfor %}
+                        </div>
+                    </section>
+                    {% endif %}
                     <p class="decision-copy">{{ last_prediction.auto_explain }}</p>
                     <div class="model-line">
                         <i data-lucide="cpu"></i>
                         <span>{{ last_prediction.model_source }}</span>
                     </div>
                     <div class="voice-actions">
+                        <a href="{{ url_for('decision_memo', prediction_id=last_prediction.id) }}" class="secondary-button">
+                            <i data-lucide="file-check-2"></i>
+                            Audit memo
+                        </a>
                         <button id="speakDecision" type="button" class="primary-button">
                             <i data-lucide="volume-2"></i>
                             Explain with voice
@@ -373,19 +750,17 @@
                             Stop voice
                         </button>
                     </div>
-                    <div class="factor-list">
-                        {% for factor in last_prediction.explain %}
-                        <div>
-                            <span>{{ factor.feature }}</span>
-                            <strong class="{{ 'good' if factor.impact > 0 else 'bad' }}">{{ '+' if factor.impact > 0 else '' }}{{ factor.impact }}%</strong>
-                        </div>
-                        {% endfor %}
-                    </div>
                     <ul class="suggestion-list">
                         {% for suggestion in last_prediction.suggestions %}
                         <li>{{ suggestion }}</li>
                         {% endfor %}
                     </ul>
+                    <div class="safeguard-list">
+                        <span class="mini-label">Control safeguards</span>
+                        {% for safeguard in last_prediction.intelligence.safeguards %}
+                        <p>{{ safeguard }}</p>
+                        {% endfor %}
+                    </div>
                     {% else %}
                     <div class="empty-state">
                         <i data-lucide="radar"></i>
@@ -458,6 +833,7 @@
                                     <strong>#{{ item.id }} {{ item.applicant_label }}</strong>
                                     <small>${{ "{:,.0f}".format(item.loan_amount) }} loan &middot; {{ item.risk_score }}% risk &middot; {{ item.created_at_label }}</small>
                                 </div>
+                                <a class="table-action-link" href="{{ url_for('decision_memo', prediction_id=item.id) }}">Memo</a>
                                 <span class="status-chip {{ item.status_tone }}">{{ item.status_label }}</span>
                             </article>
                             {% else %}
@@ -493,6 +869,12 @@
                     </div>
                     <canvas id="riskChart" height="220"></canvas>
                 </section>
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Risk bands</h2>
+                    </div>
+                    <canvas id="riskBandChart" height="220"></canvas>
+                </section>
                 <section class="panel wide-panel">
                     <div class="panel-header">
                         <h2>Income vs loan exposure</h2>
@@ -521,6 +903,31 @@
                         <div><span>Approval</span><strong id="simApproval">--%</strong></div>
                         <div><span>Risk</span><strong id="simRisk">--%</strong></div>
                     </div>
+                    <div class="sim-intel-grid">
+                        <div><span>Grade</span><strong id="simGrade">--</strong></div>
+                        <div><span>Risk APR</span><strong id="simApr">--%</strong></div>
+                        <div><span>Monthly pay</span><strong id="simPayment">--</strong></div>
+                        <div><span>Limit guide</span><strong id="simLimit">--</strong></div>
+                    </div>
+                    <div class="sim-action-card">
+                        <span class="mini-label">Scenario action</span>
+                        <strong id="simAction">Move the sliders to generate an underwriting action.</strong>
+                        <small id="simPolicy">Policy controls will appear after scoring.</small>
+                    </div>
+                    <div class="sim-rescue-card">
+                        <div>
+                            <span class="mini-label">Counterfactual path</span>
+                            <strong id="simRescueStatus">Waiting for scenario</strong>
+                            <small id="simRescueSummary">The simulator will show the fastest policy-fit path.</small>
+                        </div>
+                        <div class="sim-rescue-metrics">
+                            <div><span>Readiness</span><strong id="simRescueReadiness">--</strong></div>
+                            <div><span>Target score</span><strong id="simRescueTargetScore">--</strong></div>
+                            <div><span>Target loan</span><strong id="simRescueTargetLoan">--</strong></div>
+                            <div><span>Risk change</span><strong id="simRescueRiskDelta">--</strong></div>
+                        </div>
+                        <div id="simRescueSteps" class="sim-rescue-steps"></div>
+                    </div>
                 </section>
 
                 <section class="panel" id="assistant">
@@ -537,6 +944,9 @@
                         <button type="button" data-question="Why was I rejected?">Rejected</button>
                         <button type="button" data-question="How can I improve?">Improve</button>
                         <button type="button" data-question="What is a safe loan amount?">Safe loan</button>
+                        <button type="button" data-question="What is the policy grade?">Policy</button>
+                        <button type="button" data-question="What APR should I use?">Pricing</button>
+                        <button type="button" data-question="How is governance?">Governance</button>
                     </div>
                     <div class="chat-input-row">
                         <input id="chatInput" placeholder="Ask the advisor">
@@ -564,6 +974,7 @@
                                 <th>Applicant</th>
                                 <th>Loan</th>
                                 <th>Risk</th>
+                                <th>Grade</th>
                                 <th>Status</th>
                                 <th>Review action</th>
                             </tr>
@@ -571,13 +982,18 @@
                         <tbody>
                             {% for item in review_queue %}
                             <tr>
-                                <td>#{{ item.id }}</td>
+                                <td>
+                                    #{{ item.id }}
+                                    <a class="table-action-link" href="{{ url_for('decision_memo', prediction_id=item.id) }}">Memo</a>
+                                </td>
                                 <td>{{ item.applicant_label }}</td>
                                 <td>${{ "{:,.0f}".format(item.loan_amount) }}</td>
                                 <td>{{ item.risk_score }}% {{ item.risk_label }}</td>
+                                <td><span class="status-chip {{ item.intelligence.grade_tone }}">{{ item.intelligence.grade }}</span></td>
                                 <td><span class="status-chip {{ item.status_tone }}">{{ item.status_label }}</span></td>
                                 <td>
                                     <form action="{{ url_for('review_prediction', prediction_id=item.id) }}" method="POST" class="review-form">
+                                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                         <select name="status">
                                             <option value="approved_by_officer">Approve</option>
                                             <option value="needs_review">Keep Review</option>
@@ -590,7 +1006,7 @@
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="6" class="empty-row">No applications waiting for review.</td>
+                                <td colspan="7" class="empty-row">No applications waiting for review.</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -739,6 +1155,7 @@
                                 <th>Loan</th>
                                 <th>Score</th>
                                 <th>Risk</th>
+                                <th>Grade</th>
                                 <th>Decision</th>
                                 <th>Status</th>
                                 {% if current_user.role in ["bank_officer", "risk_admin"] %}
@@ -750,7 +1167,10 @@
                         <tbody>
                             {% for item in recent_history %}
                             <tr>
-                                <td>#{{ item.id }}</td>
+                                <td>
+                                    #{{ item.id }}
+                                    <a class="table-action-link" href="{{ url_for('decision_memo', prediction_id=item.id) }}">Memo</a>
+                                </td>
                                 <td>{{ item.applicant_label }}</td>
                                 <td>
                                     <strong class="table-title">{{ item.owner_label }}</strong>
@@ -762,6 +1182,7 @@
                                 <td>${{ "{:,.0f}".format(item.loan_amount) }}</td>
                                 <td>{{ "{:,.0f}".format(item.credit_score) }}</td>
                                 <td>{{ item.risk_score }}%</td>
+                                <td><span class="status-chip {{ item.intelligence.grade_tone }}">{{ item.intelligence.grade }}</span></td>
                                 <td><span class="status-chip {{ 'approved' if item.result == 'Approved' else 'rejected' }}">{{ item.result }}</span></td>
                                 <td><span class="status-chip {{ item.status_tone }}">{{ item.status_label }}</span></td>
                                 {% if current_user.role in ["bank_officer", "risk_admin"] %}
@@ -778,7 +1199,7 @@
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="{{ 11 if current_user.role in ['bank_officer', 'risk_admin'] else 9 }}" class="empty-row">No applications yet.</td>
+                                <td colspan="{{ 12 if current_user.role in ['bank_officer', 'risk_admin'] else 10 }}" class="empty-row">No applications yet.</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -788,10 +1209,8 @@
         </main>
     </div>
 
-    <script>
-        window.CREDISENSE = {{ chart_data|tojson }};
-        window.CREDISENSE_LAST_PREDICTION = {% if last_prediction %}{{ last_prediction|tojson }}{% else %}null{% endif %};
-    </script>
+    <script id="credisense-chart-data" type="application/json">{{ chart_data|tojson }}</script>
+    <script id="credisense-last-prediction" type="application/json">{% if last_prediction %}{{ last_prediction|tojson }}{% else %}null{% endif %}</script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

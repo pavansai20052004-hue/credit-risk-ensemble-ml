@@ -3,7 +3,15 @@ import sqlite3
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATABASE_PATH = os.environ.get("DATABASE_PATH", os.path.join(BASE_DIR, "app.db"))
+
+
+def default_sqlite_path():
+    if os.environ.get("VERCEL") and not os.environ.get("DATABASE_URL"):
+        return os.path.join("/tmp", "credisense-demo.db")
+    return os.path.join(BASE_DIR, "app.db")
+
+
+DATABASE_PATH = os.environ.get("DATABASE_PATH", default_sqlite_path())
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 try:

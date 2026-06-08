@@ -52,6 +52,7 @@
             </div>
 
             <form method="POST" class="payment-form">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                 <label>
                     Card number
                     <input value="4242 4242 4242 4242" readonly>

@@ -4,6 +4,18 @@ CrediSense AI is a full-stack Flask credit-risk platform for loan screening demo
 
 The application runs locally with SQLite and is deployment-ready for Render plus PostgreSQL through `DATABASE_URL`.
 
+## Live Demo Links
+
+Add these after deployment so recruiters can open the project without cloning the repo.
+
+| Platform | Link |
+| --- | --- |
+| Render primary demo | `https://your-render-app.onrender.com` |
+| Railway backup demo | `https://your-railway-app.up.railway.app` |
+| Vercel live demo | `https://credit-risk-project.vercel.app` |
+
+Deployment instructions are in [`LIVE_DEMO.md`](LIVE_DEMO.md).
+
 ## Highlights
 
 - Customer, bank officer, and risk admin workspaces with role-based access.
@@ -17,6 +29,10 @@ The application runs locally with SQLite and is deployment-ready for Render plus
 - Risk admin insights for top-risk candidates, best daily candidates, and officer approval history.
 - Email and SMS notification abstraction with auditable delivery records.
 - System assurance panel for status integrity, model readiness, database mode, open queue, and notifications.
+- Model governance center with drift monitoring, fairness proxy checks, data-quality controls, policy alignment, and a live model card.
+- Printable decision audit memo for each application with model output, policy flags, safeguards, review status, and governance snapshot.
+- Counterfactual approval rescue plan that converts a risky decision into target score, safer loan amount, term, blocker list, and scenario twins.
+- CSRF-protected POST flows, strict browser security headers, and CI-backed regression tests.
 
 ## Demo Logins
 
@@ -106,7 +122,13 @@ templates/                Flask templates
 static/                   Dashboard CSS and JavaScript
 docs/PRESENTATION_GUIDE.md
 render.yaml               Render deployment blueprint
+railway.toml              Railway Docker deployment config
+vercel.json               Vercel serverless Flask config
+requirements-deploy.txt   Smaller runtime dependency list for cloud demos
 Procfile                  Gunicorn process definition
+gunicorn.conf.py          Production server binding and worker settings
+Dockerfile                Container deployment image
+.github/workflows/ci.yml  GitHub Actions regression suite
 ```
 
 ## Environment Variables
@@ -123,25 +145,62 @@ TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_FROM_PHONE=
 SESSION_COOKIE_SECURE=0
+WEB_CONCURRENCY=2
+GUNICORN_THREADS=4
+GUNICORN_TIMEOUT=120
 ```
 
 Set `SESSION_COOKIE_SECURE=1` only when running behind HTTPS.
 
-## Render + PostgreSQL Deployment
+## Live Demo Deployment
 
-1. Push this repository to GitHub.
-2. Create a PostgreSQL database, such as Neon.
-3. Create a Render Web Service from the GitHub repository.
-4. Use:
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `gunicorn app:app`
-   - Health Check Path: `/api/health`
-5. Add:
-   - `DATABASE_URL`
-   - `FLASK_SECRET_KEY`
-   - optional email and Twilio variables
+For recruiters, publish at least one public URL. Render or Railway is recommended for the full Flask workflow.
 
-The app initializes its tables automatically on startup.
+Primary options:
+
+| Platform | Included config | Notes |
+| --- | --- | --- |
+| Render | `render.yaml` | Best simple primary demo. Uses Gunicorn and `/api/health`. |
+| Railway | `railway.toml` + `Dockerfile` | Good backup demo with Docker deployment. |
+| Vercel | `vercel.json` | Optional serverless demo; use PostgreSQL for durable data. |
+
+Cloud runtime install command:
+
+```bash
+pip install -r requirements-deploy.txt
+```
+
+Cloud start command:
+
+```bash
+gunicorn -c gunicorn.conf.py app:app
+```
+
+Set:
+
+```text
+FLASK_SECRET_KEY=<long-random-secret>
+SESSION_COOKIE_SECURE=1
+DATABASE_URL=<optional-postgres-url-for-durable-data>
+```
+
+See [`LIVE_DEMO.md`](LIVE_DEMO.md) for platform-by-platform steps.
+
+## Docker Deployment
+
+```bash
+docker build -t credisense-ai .
+docker run --rm -p 10000:10000 \
+  -e FLASK_SECRET_KEY=replace-with-a-long-random-secret \
+  -e SESSION_COOKIE_SECURE=0 \
+  credisense-ai
+```
+
+Open:
+
+```text
+http://127.0.0.1:10000
+```
 
 ## Model Training
 
@@ -169,7 +228,7 @@ models/best_model.joblib
 /api/health
 ```
 
-Returns database mode, model availability, notification configuration, and status-integrity issue count.
+Returns database mode, model availability, notification configuration, status-integrity issue count, and model-governance status for drift, fairness proxy, data quality, and policy exceptions.
 
 ## Tests
 
@@ -179,13 +238,13 @@ Run the regression suite:
 .\venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The tests cover health/security headers, rejected-status integrity, officer dashboard rendering, and simulator input hardening.
+The tests cover health/security headers, model governance, rejected-status integrity, officer dashboard rendering, simulator input hardening, and counterfactual rescue-plan output.
 
 ## Demo Flow
 
 1. Sign in as customer and submit an application.
-2. Review approval probability, default risk, AI score, factors, and suggestions.
-3. Use the simulator and advisor to test better loan scenarios.
+2. Review approval probability, default risk, AI score, factors, suggestions, and the approval rescue plan.
+3. Use the simulator and advisor to test counterfactual loan scenarios.
 4. Sign in as bank officer and approve or decline review-ready applications.
 5. Sign in as customer, take an approved loan, and complete a payment.
 6. Sign in as risk admin to view portfolio insights and officer history.
